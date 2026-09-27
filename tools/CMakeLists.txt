@@ -1,0 +1,5 @@
+add_executable(photos-meta photos_meta.cpp)
+target_link_libraries(photos-meta PRIVATE photos::photos)
+if(PHOTOS_INSTALL)
+  install(TARGETS photos-meta RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()

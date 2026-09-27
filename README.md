@@ -1,130 +1,192 @@
-# lumen-ios-deps
+# photos
 
-The iOS libraries Lumen ([`../cpp-photos`](../cpp-photos)) links that
-redwain's iOS packages do not carry, built once per slice into a prefix an iOS
-configure is pointed at (`pm/ADD_IOS.md` §3 in Lumen).
+A C++17 library for reading and writing photo metadata (Exif, IPTC and XMP),
+built to replace [exiv2](https://exiv2.org) in a photo album app that ships on
+Windows, macOS, Linux, iOS and Android. exiv2 is GPL; this library is
+[MIT](LICENSE).
 
-| Library | Version | Built as | Licence |
-| --- | --- | --- | --- |
-| exiv2 | 0.28.9 | static, from source | GPL-2.0-or-later |
-| expat (exiv2's XMP parser) | 2.8.5 | static, from source | MIT |
-| libwebp (with sharpyuv, demux, mux, decoder) | 1.6.0 | static, from source | BSD-3-Clause (+ PATENTS) |
-| ONNX Runtime | 1.30.0 | Microsoft's prebuilt, the `onnxruntime-c` pod's xcframework | MIT |
+- **No required dependencies.** The sources build anywhere CMake and a C++17
+  compiler do. zlib is optional; without it, the library skips compressed
+  PNG text chunks.
+- **exiv2's key names.** `Exif.Photo.DateTimeOriginal`,
+  `Iptc.Application2.Keywords`, `Xmp.dc.subject`: code written against exiv2
+  mostly ports by changing types, not strings. `tests/compare` checks the
+  output against exiv2's.
+- **Safe on untrusted files.** Every read is bounds-checked. IFD loops and
+  nesting depth are limited, and XML entities are never expanded. The test
+  suite truncates and mutates every test image under AddressSanitizer, and a
+  libFuzzer target covers every reader.
+- **Careful writing.** Only the metadata is rewritten; the image data is
+  copied byte for byte. Unchanged Exif, or Exif whose edited values still fit
+  where the old ones were, is written back in place, so maker notes keep their
+  internal offsets. Multi-picture (MPF) JPEGs keep their extra images reachable. A file
+  is replaced only after its new version has been written in full.
 
-zlib (exiv2's PNG support) and iconv come from the iOS SDK.
+This repository also builds the iOS dependency packages the app links today;
+see [docs/ios-deps.md](docs/ios-deps.md).
 
-## Packages
+## Formats
 
-| Package | Slice | Runs on |
+| Format | Read | Write |
 | --- | --- | --- |
-| `lumen-ios-deps-X.Y.Z-arm64.tar.gz` | iphoneos arm64 | iOS 16 and later (devices) |
-| `lumen-ios-deps-X.Y.Z-sim-arm64.tar.gz` | iphonesimulator arm64 | Simulator on Apple silicon Macs |
-| `lumen-ios-deps-X.Y.Z-sim-x86_64.tar.gz` | iphonesimulator x86_64 | Simulator on Intel Macs |
+| JPEG (and MPO) | Exif, IPTC, XMP, comment, ICC | Exif, IPTC, XMP, comment |
+| PNG | Exif, IPTC, XMP, ICC | Exif, IPTC, XMP |
+| WebP | Exif, XMP, ICC | Exif, XMP |
+| TIFF and TIFF-based raw: DNG, CR2, NEF, ARW, ORF, RW2, PEF, SRW, ... | Exif, IPTC, XMP | not yet |
+| HEIF/HEIC, AVIF | Exif, XMP | not yet |
+| Canon CR3 | Exif, XMP | not yet |
+| JPEG XL (container) | Exif, XMP | not yet |
+| XMP sidecar (`.xmp`) | XMP | XMP |
 
-Each is one install tree:
-
-```
-lib/                  libexiv2.a libexpat.a libwebp.a libsharpyuv.a libwebpdecoder.a
-                      libwebpdemux.a libwebpmux.a libonnxruntime.a
-lib/cmake/            exiv2/ expat-X.Y.Z/ onnxruntime/
-lib/pkgconfig/        exiv2.pc expat.pc libwebp.pc libsharpyuv.pc ... (relocatable)
-share/WebP/cmake/     WebPConfig.cmake
-include/              exiv2/ webp/ expat.h expat_config.h expat_external.h
-include/onnxruntime/  onnxruntime_c_api.h onnxruntime_cxx_api.h coreml_provider_factory.h ...
-share/licenses/       each library's licence
-VERSIONS              the pinned sources, their SHA-256 and the Xcode that built them
-```
-
-The deployment target is iOS 16.0, Lumen's. Device and simulator arm64 are one
-architecture for two platforms, so they cannot share an archive; that is why
-the packages are per slice and not an xcframework.
+For the read-only formats, write edits to an XMP sidecar (Lightroom and
+darktable do the same). The `PhotoInfo` setters handle this automatically:
+on an image that cannot hold Exif, they store the value in XMP's Exif
+namespace instead.
 
 ## Using it
 
-Unpack each slice under `~/opt/lumen-ios-deps-<slice>`. When CMake
-cross-compiles for iOS it re-roots its searches to the SDK and skips plain
-`CMAKE_PREFIX_PATH` entries, so an iOS configure names the prefix with
-`CMAKE_FIND_ROOT_PATH` and each package's directory explicitly. With redwain's
-slice beside it:
+```cpp
+#include <photos/photos.hpp>
 
-```bash
-deps=$HOME/opt/lumen-ios-deps-arm64
-redwain=$HOME/opt/redwain-ios-arm64
-cmake -B build-ios-arm64 -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
-  "-DCMAKE_FIND_ROOT_PATH=$deps;$redwain" \
-  -Dredwain_DIR=$redwain/lib/cmake/redwain \
-  -Dexiv2_DIR=$deps/lib/cmake/exiv2 \
-  -DWebP_DIR=$deps/share/WebP/cmake \
-  -Donnxruntime_DIR=$deps/lib/cmake/onnxruntime
+auto image = photos::Image::open("IMG_0001.jpg");   // or open(bytes), open(source)
+image->readMetadata();
+
+// exiv2-style access
+std::string model = image->exifData()["Exif.Image.Model"].toString();
+auto* date = image->exifData().find("Exif.Photo.DateTimeOriginal");  // nullptr if absent
+image->xmpData()["Xmp.dc.subject"] = std::vector<std::string>{"harbour", "boats"};
+image->iptcData()["Iptc.Application2.City"] = "Copenhagen";
+
+// or the album-level view, which knows where each value may live
+photos::PhotoInfo info = photos::readPhotoInfo(*image);
+if (info.dateTaken) std::cout << info.dateTaken->toIso8601() << "\n";   // 2024-05-17T18:42:07.250+02:00
+photos::setRating(*image, 4);            // Xmp.xmp.Rating (+ Microsoft/Exif ratings present)
+photos::setKeywords(*image, {"harbour"}); // Xmp.dc.subject (+ IPTC keywords present)
+photos::setOrientation(*image, 6);       // Exif (+ Xmp.tiff.Orientation present)
+
+image->writeMetadata();                  // to the same file, or buffer
 ```
 
-```cmake
-find_package(exiv2 CONFIG REQUIRED)        # Exiv2::exiv2lib (finds EXPAT, ZLIB, Iconv itself)
-find_package(WebP CONFIG REQUIRED)         # WebP::webp, WebP::sharpyuv, WebP::webpdemux, ...
-find_package(onnxruntime CONFIG REQUIRED)  # onnxruntime::onnxruntime
+`PhotoInfo` reads the date taken (with sub-seconds and UTC offset), the
+orientation, the size, camera and lens, the exposure settings, GPS position,
+title, description, keywords, creator, copyright and rating. It takes each
+value from Exif, XMP or IPTC as the
+[Metadata Working Group](https://en.wikipedia.org/wiki/Metadata_Working_Group)
+advises, so photos from any camera or application read the same.
+
+On Android, a photo from a content URI arrives as a file descriptor, and on
+iOS often as `NSData`. Pass the bytes to `Image::open(Bytes)`, or subclass
+`photos::InputSource` to read on demand. To save, call
+`writeMetadata(OutputSink&)` with a sink that writes back.
+
+An `Image` is not thread-safe; use one per thread. The XMP namespace registry
+is thread-safe.
+
+### From exiv2
+
+| exiv2 | photos |
+| --- | --- |
+| `Exiv2::ImageFactory::open(path)` | `photos::Image::open(path)` |
+| `Exiv2::XmpParser::initialize()` / `terminate()` | not needed |
+| `image->exifData()["Exif.Image.Model"]` | the same |
+| `datum.toString()`, `toInt64()`, `toFloat()`, `toRational()` | `toString()`, `toInt64()`, `toDouble()`, `toRational()` |
+| `datum.typeId()`, `datum.count()` | the same (`photos::TypeId`) |
+| `exifData.findKey(Exiv2::ExifKey(k))` | `exifData.find(k)` (a pointer) or `findKey(photos::ExifKey(k))` |
+| `Exiv2::ExifThumb(exif).copy()` | `exifData.thumbnail()` |
+| `Exiv2::XmpProperties::registerNs(uri, prefix)` | `photos::registerXmpNamespace(uri, prefix)` |
+| `Exiv2::XmpParser::decode` / `encode` | `photos::XmpData::parse` / `serialize` |
+| `Exiv2::Error` | `photos::Error` (with `code()`) |
+| `image->pixelWidth()` | the same |
+
+A few things work differently:
+
+- IPTC values are UTF-8 strings. The 2-byte binary datasets
+  (`RecordVersion` and a few others) read and write as decimal text.
+- An XMP struct, or an array of structs, has its own kind (`XmpStruct`)
+  where exiv2 reports `XmpText`.
+- Values print raw (`1/250`, `6`). exiv2's interpreted output (`1/250 s`,
+  `right, top`) and maker-note decoding are not implemented yet.
+
+### Command line
+
+`photos-meta` prints and edits metadata:
+
 ```
-
-`onnxruntime::onnxruntime` is a package written here (Microsoft ships none for
-iOS). It is the static library from the xcframework's slice, thinned to one
-architecture. It brings the frameworks Microsoft's build calls into:
-Foundation, Core ML, UIKit (`UIDevice`) and Network (`nw_path_monitor`).
-Its headers are included by bare name (`<onnxruntime_cxx_api.h>`), as with
-Homebrew's package.
-
-### How exiv2 differs from the desktop's
-
-Brotli and inih are left out: neither has an iOS build, and a static exiv2
-package refuses to load without them when they are in. Without Brotli, exiv2
-cannot read metadata from JPEG XL files whose boxes are Brotli-compressed
-(`brob`). Without inih, exiv2 does not read the `~/.exiv2` file of
-user-defined lens names. Everything else is exiv2's default: XMP, PNG, BMFF
-(HEIC, AVIF, CR3), video, lens data and filesystem access.
+photos-meta photo.jpg                          # every key, type, count and value
+photos-meta -p s photo.jpg                     # the PhotoInfo summary
+photos-meta -M "set Xmp.xmp.Rating 5" -M "del Exif.GPSInfo.GPSLatitude" photo.jpg
+```
 
 ## Building
 
-`build.sh` holds every pin (version, URL, file name, SHA-256). It needs a Mac
-with Xcode and cmake to build; fetching needs only curl and the internet.
-
 ```bash
-./build.sh fetch                 # download and verify into sources/
-./build.sh all                   # or: ./build.sh arm64 sim-arm64 sim-x86_64
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build
 ```
 
-For each slice it builds expat, exiv2 and libwebp, takes ONNX Runtime's slice
-from the xcframework, writes the licences and `VERSIONS`, and then checks the
-result:
+| Option | Default | |
+| --- | --- | --- |
+| `PHOTOS_WITH_ZLIB` | `AUTO` | `ON`, `OFF` or `AUTO` (use zlib when found) |
+| `PHOTOS_BUILD_TESTS` | on when top level | the unit tests |
+| `PHOTOS_BUILD_TOOLS` | on when top level | `photos-meta` |
+| `PHOTOS_BUILD_FUZZERS` | `OFF` | the libFuzzer target (Clang) |
+| `PHOTOS_INSTALL` | on when top level | the install rules and CMake package |
+| `PHOTOS_WARNINGS_AS_ERRORS` | `OFF` | |
+| `BUILD_SHARED_LIBS` | `OFF` | only the public API is exported |
 
-- every archive is a static library of this slice's one architecture;
-- no package file (CMake, pkg-config, headers) names the build machine;
-- `tests/consumer` configures against the prefix the way Lumen does, finds the
-  versions pinned, and links a program that uses each library (XMP through
-  expat, a PNG through zlib, a WebP encode with sharp YUV, an ONNX Runtime
-  session with Core ML);
-- no library needs a newer iOS than 16.0, and the program is linked for the
-  slice's platform (`vtool`).
+Consume it with `add_subdirectory` or, after `cmake --install`, with
+`find_package(photos CONFIG REQUIRED)`. Either way, link `photos::photos`.
 
-Nothing iOS runs on the build machine, so the consumer is linked, not run.
-The packages land in `dist/`, the prefixes in `stage/`.
+Cross-compiling works the usual way:
 
-`JOBS` caps the parallel build (default: every core). `CMAKE_GENERATOR` picks
-the generator (default: CMake's; the release workflow uses Ninja).
+```bash
+# iOS (device; use iphonesimulator for the Simulator)
+cmake -S . -B build-ios -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+  -DPHOTOS_BUILD_TESTS=OFF -DPHOTOS_BUILD_TOOLS=OFF
+# Android
+cmake -S . -B build-android -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24
+```
 
-On a Mac without the internet, run `./build.sh fetch` elsewhere and copy
-`sources/` over with the tree: the build only verifies what is there.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 
-## Updating a library
+- builds and tests with GCC, Clang, AppleClang and MSVC, and as a shared
+  library;
+- runs the tests under ASan and UBSan, as both 64-bit and 32-bit builds;
+- compares the output with exiv2's;
+- cross-compiles for iOS (device and both Simulator architectures) and for
+  Android (arm64-v8a, armeabi-v7a, x86_64);
+- fuzzes for two minutes.
 
-Change its version, URL, file name and hash in `build.sh`, the table above,
-and `VERSION` (a new minor for a library upgrade, a new patch for a rebuild),
-then build every slice. Lumen pins this package's version in two places
-(`release.yml` and `cmake/Dependencies.cmake`'s iOS branch), so a bump there is
-a one-line change once the release is out.
+## Tests
 
-## Releasing
+- `tests/unit`: the unit tests, over the images in `tests/data`. They cover
+  the codecs, every format's reading and writing, the `PhotoInfo` layer, and
+  robustness against truncated and mutated files. They use a small built-in
+  harness, so they build on every platform the library does.
+- `tests/compare/compare_exiv2.sh build/tools/photos-meta tests/data/*.jpg ...`
+  compares every key, type, count and value with `exiv2 -Pkycv`. The only
+  differences it allows are listed in the script, and are by design.
+- `tests/data/generate.py` regenerates the test images with Pillow,
+  pillow-heif and exiftool.
+- `tests/find_package` builds against an installed package.
 
-Publishing a GitHub release tagged `vX.Y.Z` (matching `VERSION`) runs
-`.github/workflows/release.yml`: the three slices build on `macos-latest` and
-their tarballs are attached to the release with a `SHA256SUMS` file. A manual
-dispatch runs the same builds and keeps the packages as workflow artifacts
-only.
+## Not yet done
+
+This is a first cut of the framework. What exiv2 does that this library does
+not do yet, roughly in order of what a photo album needs:
+
+- writing HEIF/HEIC and AVIF (today: use a sidecar);
+- maker notes: Canon, Nikon, Sony and other lens names, decoded (they are
+  kept as `Exif.Photo.MakerNote` bytes, and survive edits);
+- interpreted values (`exiv2 -pt` style);
+- preview images inside raw files (exiv2's `PreviewManager`); the Exif
+  thumbnail is available now;
+- writing TIFF and raw files;
+- extended XMP in JPEG, over 64 KB: it is read past and kept, but not merged
+  into the XMP data;
+- JPEG XL's Brotli-compressed boxes, and XMP in UTF-16;
+- XMP qualifiers other than `xml:lang`;
+- video formats.

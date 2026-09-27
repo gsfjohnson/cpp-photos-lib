@@ -8,3 +8,6 @@
 
 # Local-only: machine-specific Claude notes
 .claude/
+
+# Library build trees
+/build-*/
