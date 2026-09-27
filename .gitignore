@@ -1,0 +1,10 @@
+.DS_Store
+
+# Downloaded sources, build trees, staged prefixes and packages (build.sh)
+/sources/
+/build/
+/stage/
+/dist/
+
+# Local-only: machine-specific Claude notes
+.claude/

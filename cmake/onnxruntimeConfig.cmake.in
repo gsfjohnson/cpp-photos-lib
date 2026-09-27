@@ -1,0 +1,28 @@
+# ONNX Runtime @VERSION@ for one iOS slice: Microsoft's prebuilt (the
+# onnxruntime-c pod's xcframework), thinned to this slice's architecture. A
+# static library, CPU and Core ML execution providers. Written by
+# lumen-ios-deps (cmake/onnxruntimeConfig.cmake.in).
+#
+#   find_package(onnxruntime CONFIG REQUIRED)
+#   target_link_libraries(app PRIVATE onnxruntime::onnxruntime)
+#
+# Headers are included by bare name (<onnxruntime_cxx_api.h>), as with
+# Homebrew's package.
+
+if(TARGET onnxruntime::onnxruntime)
+  return()
+endif()
+
+get_filename_component(_onnxruntime_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+add_library(onnxruntime::onnxruntime STATIC IMPORTED)
+set_target_properties(onnxruntime::onnxruntime PROPERTIES
+  IMPORTED_LOCATION "${_onnxruntime_prefix}/lib/libonnxruntime.a"
+  # C++ inside, so the final link is a C++ one (libc++) even from C.
+  IMPORTED_LINK_INTERFACE_LANGUAGES CXX
+  INTERFACE_INCLUDE_DIRECTORIES "${_onnxruntime_prefix}/include/onnxruntime"
+  # What Microsoft's objects call into (UIDevice; nw_path_monitor), found by
+  # linking tests/consumer; the pod leaves them to the app.
+  INTERFACE_LINK_LIBRARIES "-framework Foundation;-framework CoreML;-framework UIKit;-framework Network")
+
+unset(_onnxruntime_prefix)

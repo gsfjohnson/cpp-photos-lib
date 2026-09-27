@@ -1,0 +1,84 @@
+name: Release
+
+# Publishing a GitHub release (tag vX.Y.Z, matching VERSION) builds every iOS
+# slice and attaches the packages to it, with a SHA256SUMS file:
+#   lumen-ios-deps-X.Y.Z-arm64.tar.gz
+#   lumen-ios-deps-X.Y.Z-sim-arm64.tar.gz
+#   lumen-ios-deps-X.Y.Z-sim-x86_64.tar.gz
+# Each is an install tree that Lumen's iOS configure names with
+# CMAKE_FIND_ROOT_PATH and each package's <pkg>_DIR (README, "Using it").
+# build.sh does the work and the checks, so a release builds exactly what a
+# Mac does locally.
+#
+# A manual dispatch runs the same builds and keeps the packages as workflow
+# artifacts only — nothing is attached anywhere.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.slice }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [arm64, sim-arm64, sim-x86_64]
+    env:
+      CMAKE_GENERATOR: Ninja
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: brew install ninja
+
+      - name: Version
+        id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+            if [ "${tag#v}" != "$version" ]; then
+              echo "::error::Release tag $tag does not match VERSION $version"
+              exit 1
+            fi
+          fi
+          echo "package=lumen-ios-deps-$version-${{ matrix.slice }}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch
+        run: ./build.sh fetch
+
+      # Builds, checks (archives, relocatability, the link-only consumer,
+      # deployment target) and packages the slice into dist/.
+      - name: Build
+        run: ./build.sh ${{ matrix.slice }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.package }}
+          path: dist/${{ steps.version.outputs.package }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: ${{ github.event_name == 'release' }}
+    needs: build
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          sha256sum lumen-ios-deps-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "${{ github.event.release.tag_name }}" lumen-ios-deps-* SHA256SUMS \
+            --clobber --repo "${{ github.repository }}"
