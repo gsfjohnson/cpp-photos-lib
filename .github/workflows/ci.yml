@@ -1,0 +1,127 @@
+name: CI
+
+# The photos library on every platform the album app ships on: built and
+# tested on Linux, macOS and Windows; cross-compiled for iOS (device and
+# Simulator) and Android (64- and 32-bit ABIs), where nothing can run.
+# Separately: the tests under AddressSanitizer and UBSan (64- and 32-bit), a
+# listing comparison with exiv2 over the test images, and a short fuzzing run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc, os: ubuntu-latest, cxx: g++, werror: ON }
+          - { name: linux-clang, os: ubuntu-latest, cxx: clang++, werror: ON }
+          - { name: linux-shared, os: ubuntu-latest, cxx: g++, werror: ON, extra: -DBUILD_SHARED_LIBS=ON }
+          - { name: macos, os: macos-latest, cxx: clang++, werror: ON }
+          # MSVC's /W4 is reported but not yet fatal.
+          - { name: windows-msvc, os: windows-latest, cxx: cl, werror: OFF }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DPHOTOS_WARNINGS_AS_ERRORS=${{ matrix.werror }} ${{ matrix.extra }}
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Install and consume
+        shell: bash
+        run: |
+          cmake --install build --config Release --prefix "$PWD/prefix"
+          cmake -S tests/find_package -B consumer -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build consumer --config Release
+
+  sanitizers:
+    name: sanitizers (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v7
+      - if: matrix.arch == 'x86'
+        run: sudo apt-get update && sudo apt-get install -y g++-multilib
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DPHOTOS_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_CXX_FLAGS="${{ matrix.arch == 'x86' && '-m32' || '' }} -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          ${{ matrix.arch == 'x86' && '-DPHOTOS_WITH_ZLIB=OFF' || '' }}
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
+
+  exiv2-compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y exiv2
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
+      - run: tests/compare/compare_exiv2.sh build/tools/photos-meta tests/data/*.{jpg,mpo,png,webp,tif,avif,heic,xmp}
+
+  ios:
+    name: ios (${{ matrix.sysroot }} ${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { sysroot: iphoneos, arch: arm64 }
+          - { sysroot: iphonesimulator, arch: arm64 }
+          - { sysroot: iphonesimulator, arch: x86_64 }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=${{ matrix.sysroot }}
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
+          -DCMAKE_BUILD_TYPE=Release -DPHOTOS_BUILD_TESTS=OFF -DPHOTOS_BUILD_TOOLS=OFF
+          -DPHOTOS_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build --parallel
+      - run: lipo -archs build/libphotos.a
+
+  android:
+    name: android (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=${{ matrix.abi }} -DANDROID_PLATFORM=android-24
+          -DCMAKE_BUILD_TYPE=Release -DPHOTOS_WARNINGS_AS_ERRORS=ON
+      # The tests build (they cannot run here), which checks the API compiles
+      # for the ABI too.
+      - run: cmake --build build --parallel
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: >
+          cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DPHOTOS_BUILD_FUZZERS=ON -DPHOTOS_BUILD_TESTS=OFF -DPHOTOS_BUILD_TOOLS=OFF
+      - run: cmake --build build --target fuzz_image --parallel
+      - name: Fuzz for two minutes from the test images
+        run: |
+          mkdir corpus && cp tests/data/*.{jpg,mpo,png,webp,tif,avif,heic,xmp} corpus/
+          build/fuzz/fuzz_image -max_total_time=120 -rss_limit_mb=2048 corpus

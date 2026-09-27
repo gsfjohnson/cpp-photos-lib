@@ -6,7 +6,7 @@ name: Release
 #   lumen-ios-deps-X.Y.Z-sim-arm64.tar.gz
 #   lumen-ios-deps-X.Y.Z-sim-x86_64.tar.gz
 # Each is an install tree that Lumen's iOS configure names with
-# CMAKE_FIND_ROOT_PATH and each package's <pkg>_DIR (README, "Using it").
+# CMAKE_FIND_ROOT_PATH and each package's <pkg>_DIR (docs/ios-deps.md, "Using it").
 # build.sh does the work and the checks, so a release builds exactly what a
 # Mac does locally.
 #

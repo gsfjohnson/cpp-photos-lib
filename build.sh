@@ -191,7 +191,7 @@ build_slice() {
   cp "$BUILD/src/libwebp-$WEBP_VERSION/COPYING" "$BUILD/src/libwebp-$WEBP_VERSION/PATENTS" "$lic/libwebp/"
   cp "$ort/LICENSE" "$lic/onnxruntime/"
   rm -rf "$prefix/share/doc" "$prefix/share/man"
-  cp "$ROOT/README.md" "$prefix/"
+  cp "$ROOT/docs/ios-deps.md" "$prefix/README.md"
   {
     echo "lumen-ios-deps $VERSION ($slice: $sysroot $arch, iOS $DEPLOYMENT_TARGET)"
     echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ) with $(xcodebuild -version | tr '\n' ' ')"
