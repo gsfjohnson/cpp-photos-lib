@@ -1,4 +1,4 @@
-// Damaged files must fail with photos::Error, never crash, hang or throw
+// Damaged files must fail with lumenlib::Error, never crash, hang or throw
 // anything else. Each fixture is truncated and randomly mutated (with a fixed
 // seed, so failures reproduce); run under AddressSanitizer in CI.
 #include "testing.hpp"
@@ -6,23 +6,26 @@
 #include <algorithm>
 #include <random>
 
-using namespace photos;
+using namespace lumenlib;
 
 namespace {
 
 const char* const kFixtures[] = {"photo.jpg",     "motorola.jpg", "multi.mpo",  "photo.png",  "photo.webp",
                                  "lossless.webp", "photo.tif",    "photo.heic", "photo.avif", "photo.xmp"};
 
-// Reads, and when possible writes, the data. Only photos::Error may escape.
+// Reads, and when possible writes, the data. Only lumenlib::Error may escape.
 void exercise(Bytes data) {
   try {
-    auto image = Image::open(std::move(data));
-    image->readMetadata();
-    (void)readPhotoInfo(*image);
-    if (image->canWrite(MetadataKind::exif) || image->canWrite(MetadataKind::xmp)) {
-      image->xmpData()["Xmp.xmp.Rating"] = "3";
+    auto file = ImageFile::open(std::move(data));
+    file->load();
+    (void)readPhotoInfo(*file);
+    for (const auto& e : file->exif()) (void)e.describe();
+    (void)lensDescription(file->exif());
+    if (file->canWrite(MetadataKind::exif) || file->canWrite(MetadataKind::xmp)) {
+      file->xmp().setText("xmp:Rating", "3");
+      if (file->canWrite(MetadataKind::exif)) file->exif().remove("gps.GPSLatitude");
       MemorySink sink;
-      image->writeMetadata(sink);
+      file->saveTo(sink);
     }
   } catch (const Error&) {
   }

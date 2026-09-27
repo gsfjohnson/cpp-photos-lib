@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 bool isResourceSignature(std::uint32_t sig) {
@@ -60,14 +60,14 @@ Bytes serializeImageResources(const std::vector<ImageResource>& resources) {
   return out;
 }
 
-std::optional<IptcData> iptcFromImageResources(const std::vector<ImageResource>& resources) {
+std::optional<IptcMetadata> iptcFromImageResources(const std::vector<ImageResource>& resources) {
   for (const auto& r : resources) {
-    if (r.id == kIptcResource && r.signature == 0x3842494d) return IptcData::decode(r.data.data(), r.data.size());
+    if (r.id == kIptcResource && r.signature == 0x3842494d) return IptcMetadata::decode(r.data.data(), r.data.size());
   }
   return std::nullopt;
 }
 
-void setIptcImageResource(std::vector<ImageResource>& resources, const IptcData& iptc) {
+void setIptcImageResource(std::vector<ImageResource>& resources, const IptcMetadata& iptc) {
   const Bytes encoded = iptc.encode();
   resources.erase(
       std::remove_if(resources.begin(), resources.end(),
@@ -79,4 +79,4 @@ void setIptcImageResource(std::vector<ImageResource>& resources, const IptcData&
   resources.push_back({0x3842494d, kIptcDigestResource, {}, Bytes(digest.begin(), digest.end())});
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

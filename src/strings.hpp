@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 
 inline bool isSpace(char c) noexcept {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
@@ -152,4 +152,4 @@ inline std::string hex2(unsigned v) {
   return s;
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

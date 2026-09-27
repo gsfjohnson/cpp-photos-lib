@@ -1,7 +1,7 @@
 // A minimal test harness, so the tests build wherever the library does.
 #pragma once
 
-#include <photos/photos.hpp>
+#include <lumenlib/lumenlib.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -55,65 +55,66 @@ inline const std::string kKobenhavn =
 inline const std::string kAlesund = "\xc3\x85lesund";  // Alesund with A-ring
 
 inline std::filesystem::path dataPath(const std::string& name) {
-  return std::filesystem::path(PHOTOS_TEST_DATA_DIR) / name;
+  return std::filesystem::path(LUMENLIB_TEST_DATA_DIR) / name;
 }
 
-inline photos::Bytes readFile(const std::filesystem::path& path) {
+inline lumenlib::Bytes readFile(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) throw Failure{"cannot read " + path.string()};
-  return photos::Bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  return lumenlib::Bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-inline photos::Bytes readData(const std::string& name) { return readFile(dataPath(name)); }
+inline lumenlib::Bytes readData(const std::string& name) { return readFile(dataPath(name)); }
 
 // Opens and reads a fixture from memory.
-inline std::unique_ptr<photos::Image> load(const std::string& name) {
-  auto image = photos::Image::open(readData(name));
-  image->readMetadata();
-  return image;
+inline std::unique_ptr<lumenlib::ImageFile> load(const std::string& name) {
+  auto file = lumenlib::ImageFile::open(readData(name));
+  file->load();
+  return file;
 }
 
-// Writes the image to memory and reads the result back.
-inline std::unique_ptr<photos::Image> roundTrip(const photos::Image& image) {
-  photos::MemorySink sink;
-  image.writeMetadata(sink);
-  auto again = photos::Image::open(sink.release());
-  again->readMetadata();
+// Writes the file to memory and reads the result back.
+inline std::unique_ptr<lumenlib::ImageFile> roundTrip(const lumenlib::ImageFile& file) {
+  lumenlib::MemorySink sink;
+  file.saveTo(sink);
+  auto again = lumenlib::ImageFile::open(sink.release());
+  again->load();
   return again;
 }
 
-// The TIFF block the library writes for the Exif data (taken from the APP1
-// segment of a minimal JPEG, so only the public API is used).
-inline photos::Bytes tiffOf(const photos::ExifData& exif) {
-  const photos::Bytes bare = {0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x00, 0xff, 0xd9};
-  auto image = photos::Image::open(bare);
-  image->readMetadata();
-  image->exifData() = exif;
-  photos::MemorySink sink;
-  image->writeMetadata(sink);
-  const photos::Bytes& j = sink.data();
-  if (j.size() < 12 || j[2] != 0xff || j[3] != 0xe1) return {};
-  const std::size_t n = static_cast<std::size_t>(j[4] << 8 | j[5]) - 8;
-  return photos::Bytes(j.begin() + 12, j.begin() + 12 + static_cast<std::ptrdiff_t>(n));
-}
+// The TIFF block the library writes for the Exif data.
+inline lumenlib::Bytes tiffOf(const lumenlib::ExifMetadata& exif) { return exif.encode(); }
+
+// A scratch directory of the test's own, removed with everything in it.
+struct TempDir {
+  std::filesystem::path path;
+  explicit TempDir(const std::string& name) : path(std::filesystem::temp_directory_path() / name) {
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+  }
+  ~TempDir() {
+    std::error_code ignored;
+    std::filesystem::remove_all(path, ignored);
+  }
+};
 
 // An ISO BMFF box.
-inline photos::Bytes box(const std::string& type, const photos::Bytes& payload) {
+inline lumenlib::Bytes box(const std::string& type, const lumenlib::Bytes& payload) {
   const std::size_t n = payload.size() + 8;
-  photos::Bytes b = {static_cast<std::uint8_t>(n >> 24), static_cast<std::uint8_t>(n >> 16),
-                     static_cast<std::uint8_t>(n >> 8), static_cast<std::uint8_t>(n)};
+  lumenlib::Bytes b = {static_cast<std::uint8_t>(n >> 24), static_cast<std::uint8_t>(n >> 16),
+                       static_cast<std::uint8_t>(n >> 8), static_cast<std::uint8_t>(n)};
   b.insert(b.end(), type.begin(), type.end());
   b.insert(b.end(), payload.begin(), payload.end());
   return b;
 }
 
-inline photos::Bytes concat(std::initializer_list<photos::Bytes> parts) {
-  photos::Bytes out;
+inline lumenlib::Bytes concat(std::initializer_list<lumenlib::Bytes> parts) {
+  lumenlib::Bytes out;
   for (const auto& p : parts) out.insert(out.end(), p.begin(), p.end());
   return out;
 }
 
-inline photos::Bytes bytesOf(const std::string& s) { return photos::Bytes(s.begin(), s.end()); }
+inline lumenlib::Bytes bytesOf(const std::string& s) { return lumenlib::Bytes(s.begin(), s.end()); }
 
 }  // namespace testing
 
@@ -155,7 +156,7 @@ inline photos::Bytes bytesOf(const std::string& s) { return photos::Bytes(s.begi
     bool thrown_ = false;                                                                                           \
     try {                                                                                                           \
       (void)(expr);                                                                                                 \
-    } catch (const photos::Error& e_) {                                                                             \
+    } catch (const lumenlib::Error& e_) {                                                                           \
       thrown_ = e_.code() == (errorCode);                                                                           \
       if (!thrown_) {                                                                                               \
         throw testing::Failure{std::string(__FILE__) + ":" + std::to_string(__LINE__) +                             \

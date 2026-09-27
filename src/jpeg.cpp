@@ -6,7 +6,7 @@
 // on, unchanged. A multi-picture (MPF, APP2) segment's offsets point past the
 // primary image, so they are moved by however much the segments before them
 // grew or shrank.
-#include <photos/error.hpp>
+#include <lumenlib/error.hpp>
 
 #include "bytes.hpp"
 #include "exif_internal.hpp"
@@ -17,7 +17,7 @@
 #include <cstring>
 #include <map>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 constexpr std::uint8_t kSOI = 0xd8;
@@ -138,7 +138,7 @@ void writeSegment(Bytes& out, std::uint8_t marker, std::string_view id, const st
 // Moves the MP Entry offsets of an MPF payload (after "MPF\0") by delta.
 void patchMpf(Bytes& mpf, std::int64_t delta) {
   if (delta == 0 || !isTiffHeader(mpf.data(), mpf.size())) return;
-  const ByteOrder order = mpf[0] == 'I' ? ByteOrder::littleEndian : ByteOrder::bigEndian;
+  const ByteOrder order = mpf[0] == 'I' ? ByteOrder::little : ByteOrder::big;
   const std::uint32_t ifd = get32(mpf.data() + 4, order);
   if (!inBounds(mpf.size(), ifd, 2)) return;
   const std::uint16_t count = get16(mpf.data() + ifd, order);
@@ -159,77 +159,93 @@ void patchMpf(Bytes& mpf, std::int64_t delta) {
   }
 }
 
-class JpegImage final : public Image {
- public:
-  explicit JpegImage(std::unique_ptr<InputSource> source)
-      : Image(ImageType::jpeg, std::move(source), kExif | kIptc | kXmp | kComment | kIcc,
-              kExif | kIptc | kXmp | kComment) {}
+}  // namespace
 
- protected:
-  void doReadMetadata() override {
-    const InputSource& src = source();
-    const Layout layout = scan(src);
-    std::map<int, Bytes> iccChunks;
-    Bytes irb;
-    bool haveExif = false, haveXmp = false, haveComment = false;
-    for (const auto& s : layout.segments) {
-      if (isSof(s.marker) && s.length >= 5 && width_ == 0) {
-        height_ = getBe16(s.head.data() + 1);
-        width_ = getBe16(s.head.data() + 3);
-        continue;
-      }
-      switch (kindOf(s)) {
-        case Kind::exif:
-          if (!haveExif) {
-            haveExif = true;
-            const Bytes data = src.readBytes(s.payload() + 6, s.length - 6);
-            try {
-              decodeTiff(data.data(), data.size(), exif_);
-            } catch (const Error&) {
-              exif_.clear();  // not TIFF after all
-            }
-          }
-          break;
-        case Kind::xmp:
-          if (!haveXmp) {
-            haveXmp = true;
-            const Bytes data = src.readBytes(s.payload() + kXmpId.size(), s.length - kXmpId.size());
-            setXmpPacket(toText(data.data(), data.size()));
-          }
-          break;
-        case Kind::icc:
-          if (s.length > 14) {
-            iccChunks[s.head[12]] = src.readBytes(s.payload() + 14, s.length - 14);
-          }
-          break;
-        case Kind::photoshop: {
-          const Bytes data = src.readBytes(s.payload() + kPhotoshopId.size(), s.length - kPhotoshopId.size());
-          append(irb, data);
-          break;
-        }
-        case Kind::comment:
-          if (!haveComment) {
-            haveComment = true;
-            const Bytes data = src.readBytes(s.payload(), s.length);
-            comment_ = toText(data.data(), data.size());
-            while (!comment_.empty() && comment_.back() == '\0') comment_.pop_back();
-          }
-          break;
-        default:
-          break;
-      }
+JpegMetadata readJpegMetadata(const InputSource& src) {
+  JpegMetadata m;
+  const Layout layout = scan(src);
+  std::map<int, Bytes> iccChunks;
+  Bytes irb;
+  bool haveExif = false, haveXmp = false, haveComment = false;
+  for (const auto& s : layout.segments) {
+    if (isSof(s.marker) && s.length >= 5 && m.width == 0) {
+      m.height = getBe16(s.head.data() + 1);
+      m.width = getBe16(s.head.data() + 3);
+      continue;
     }
-    for (const auto& [seq, chunk] : iccChunks) append(icc_, chunk);
-    if (!irb.empty()) {
-      try {
-        if (auto iptc = iptcFromImageResources(parseImageResources(irb.data(), irb.size()))) iptc_ = std::move(*iptc);
-      } catch (const Error&) {
-        iptc_.clear();
+    switch (kindOf(s)) {
+      case Kind::exif:
+        if (!haveExif) {
+          haveExif = true;
+          const Bytes data = src.readBytes(s.payload() + 6, s.length - 6);
+          try {
+            decodeTiff(data.data(), data.size(), m.exif);
+          } catch (const Error& e) {
+            m.exif.clear();  // not TIFF after all
+            warn(std::string("JPEG Exif segment not read: ") + e.what());
+          }
+        }
+        break;
+      case Kind::xmp:
+        if (!haveXmp) {
+          haveXmp = true;
+          const Bytes data = src.readBytes(s.payload() + kXmpId.size(), s.length - kXmpId.size());
+          m.xmpPacket = toText(data.data(), data.size());
+        }
+        break;
+      case Kind::icc:
+        if (s.length > 14) {
+          iccChunks[s.head[12]] = src.readBytes(s.payload() + 14, s.length - 14);
+        }
+        break;
+      case Kind::photoshop: {
+        const Bytes data = src.readBytes(s.payload() + kPhotoshopId.size(), s.length - kPhotoshopId.size());
+        append(irb, data);
+        break;
       }
+      case Kind::comment:
+        if (!haveComment) {
+          haveComment = true;
+          const Bytes data = src.readBytes(s.payload(), s.length);
+          m.comment = toText(data.data(), data.size());
+          while (!m.comment.empty() && m.comment.back() == '\0') m.comment.pop_back();
+        }
+        break;
+      default:
+        break;
     }
   }
+  for (const auto& [seq, chunk] : iccChunks) append(m.icc, chunk);
+  if (!irb.empty()) {
+    try {
+      if (auto iptc = iptcFromImageResources(parseImageResources(irb.data(), irb.size()))) m.iptc = std::move(*iptc);
+    } catch (const Error& e) {
+      m.iptc.clear();
+      warn(std::string("JPEG IPTC not read: ") + e.what());
+    }
+  }
+  return m;
+}
 
-  void doWriteMetadata(OutputSink& sink) const override {
+namespace {
+
+class JpegFile final : public ImageFile {
+ public:
+  explicit JpegFile(std::unique_ptr<InputSource> source) : ImageFile(FileFormat::jpeg, std::move(source)) {}
+
+ protected:
+  void doLoad() override {
+    JpegMetadata m = readJpegMetadata(source());
+    exif_ = std::move(m.exif);
+    iptc_ = std::move(m.iptc);
+    comment_ = std::move(m.comment);
+    icc_ = std::move(m.icc);
+    width_ = m.width;
+    height_ = m.height;
+    if (!m.xmpPacket.empty()) setXmpPacket(std::move(m.xmpPacket));
+  }
+
+  void doSave(OutputSink& sink) const override {
     const InputSource& src = source();
     const Layout layout = scan(src);
 
@@ -245,8 +261,8 @@ class JpegImage final : public Image {
     // Exif; if it is too big for a segment, without its thumbnail.
     Bytes tiff = encodeExif(exif_);
     if (tiff.size() + kExifId.size() > kMaxPayload && !exif_.thumbnail().empty()) {
-      ExifData smaller = exif_;
-      smaller.eraseThumbnail();
+      ExifMetadata smaller = exif_;
+      smaller.removeThumbnail();
       tiff = encodeExif(smaller);
     }
     if (!tiff.empty()) {
@@ -256,14 +272,14 @@ class JpegImage final : public Image {
 
     if (!xmp_.empty()) {
       std::string packet = xmp_.serialize();
-      if (packet.size() + kXmpId.size() > kMaxPayload) packet = xmp_.serialize({0, false});
+      if (packet.size() + kXmpId.size() > kMaxPayload) packet = xmp_.serialize({0, true, false});
       if (packet.size() + kXmpId.size() > kMaxPayload) {
         throw Error(ErrorCode::dataTooLarge, "XMP packet exceeds 64 KB (extended XMP is not written)");
       }
       writeSegment(out, kAPP1, kXmpId, reinterpret_cast<const std::uint8_t*>(packet.data()), packet.size());
       // The extension of an unchanged packet stays valid (it is found by
       // the GUID in xmpNote:HasExtendedXMP).
-      if (xmp_.find("Xmp.xmpNote.HasExtendedXMP")) {
+      if (xmp_.find("xmpNote:HasExtendedXMP")) {
         for (const auto& s : layout.segments) {
           if (kindOf(s) == Kind::xmpExtension) append(out, src.readBytes(s.offset, 4 + s.length));
         }
@@ -289,6 +305,22 @@ class JpegImage final : public Image {
       writeSegment(out, kCOM, {}, reinterpret_cast<const std::uint8_t*>(comment_.data()), comment_.size());
     }
 
+    // A new ICC profile, in as many APP2 segments as it needs (numbered from
+    // 1); an unchanged one is copied with the other segments.
+    if (iccChanged_ && !icc_.empty()) {
+      const std::size_t chunk = kMaxPayload - kIccId.size() - 2;
+      const std::size_t chunks = (icc_.size() + chunk - 1) / chunk;
+      if (chunks > 255) throw Error(ErrorCode::dataTooLarge, "ICC profile too large for a JPEG");
+      for (std::size_t i = 0; i < chunks; ++i) {
+        const std::size_t n = std::min(chunk, icc_.size() - i * chunk);
+        Bytes payload;
+        payload.push_back(static_cast<std::uint8_t>(i + 1));
+        payload.push_back(static_cast<std::uint8_t>(chunks));
+        append(payload, icc_.data() + i * chunk, n);
+        writeSegment(out, kAPP2, kIccId, payload.data(), payload.size());
+      }
+    }
+
     // Everything else, in order. MPF offsets are relative to the MPF header,
     // and point past the image data.
     std::vector<std::pair<std::size_t, std::uint64_t>> mpfAt;  // position in out, position in the source
@@ -301,6 +333,10 @@ class JpegImage final : public Image {
         case Kind::photoshop:
         case Kind::comment:
           continue;
+        case Kind::icc:
+          if (iccChanged_) continue;
+          append(out, src.readBytes(s.offset, 4 + s.length));
+          break;
         case Kind::mpf:
           mpfAt.emplace_back(out.size(), s.offset);
           [[fallthrough]];
@@ -327,8 +363,8 @@ class JpegImage final : public Image {
 
 }  // namespace
 
-std::unique_ptr<Image> newJpegImage(std::unique_ptr<InputSource> source) {
-  return std::make_unique<JpegImage>(std::move(source));
+std::unique_ptr<ImageFile> newJpegFile(std::unique_ptr<InputSource> source) {
+  return std::make_unique<JpegFile>(std::move(source));
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

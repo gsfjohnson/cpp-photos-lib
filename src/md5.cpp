@@ -3,7 +3,7 @@
 
 #include <cstring>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 constexpr std::uint32_t kK[64] = {
@@ -77,4 +77,4 @@ std::array<std::uint8_t, 16> md5(const std::uint8_t* data, std::size_t size) {
   return out;
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

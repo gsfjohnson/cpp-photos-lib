@@ -2,7 +2,7 @@
 // the extended format, so writing it into a simple (VP8/VP8L) file adds a
 // VP8X chunk. Chunk order follows the container specification: VP8X, ICCP,
 // ANIM, image data, EXIF, XMP, then anything unknown.
-#include <photos/error.hpp>
+#include <lumenlib/error.hpp>
 
 #include "bytes.hpp"
 #include "exif_internal.hpp"
@@ -10,7 +10,7 @@
 
 #include <algorithm>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 constexpr std::uint8_t kFlagIcc = 0x20;
@@ -56,13 +56,12 @@ std::vector<Chunk> scan(const InputSource& src) {
   return chunks;
 }
 
-class WebpImage final : public Image {
+class WebpFile final : public ImageFile {
  public:
-  explicit WebpImage(std::unique_ptr<InputSource> source)
-      : Image(ImageType::webp, std::move(source), kExif | kXmp | kIcc, kExif | kXmp) {}
+  explicit WebpFile(std::unique_ptr<InputSource> source) : ImageFile(FileFormat::webp, std::move(source)) {}
 
  protected:
-  void doReadMetadata() override {
+  void doLoad() override {
     const InputSource& src = source();
     for (const auto& c : scan(src)) {
       if (c.fourcc == "VP8X" && c.size >= 10) {
@@ -97,7 +96,7 @@ class WebpImage final : public Image {
     }
   }
 
-  void doWriteMetadata(OutputSink& sink) const override {
+  void doSave(OutputSink& sink) const override {
     const InputSource& src = source();
     const auto chunks = scan(src);
     const Bytes tiff = encodeExif(exif_);
@@ -108,7 +107,7 @@ class WebpImage final : public Image {
     std::uint32_t width = 0, height = 0;
     for (const auto& c : chunks) {
       if (c.fourcc == "VP8X" && c.size >= 10) vp8x = &c;
-      if (c.fourcc == "ICCP") icc = true;
+      if (c.fourcc == "ICCP") icc = !iccChanged_;
       if (c.fourcc == "ALPH") alpha = true;
       if (c.fourcc == "ANIM") animation = true;
       if (c.fourcc == "VP8 " && c.size >= 10) {
@@ -125,8 +124,9 @@ class WebpImage final : public Image {
       }
     }
 
+    if (iccChanged_) icc = !icc_.empty();
     Bytes header;
-    if (vp8x || !tiff.empty() || !packet.empty()) {
+    if (vp8x || !tiff.empty() || !packet.empty() || icc) {
       std::uint8_t flags = 0;
       if (vp8x) {
         const Bytes d = src.readBytes(vp8x->payload(), 10);
@@ -134,7 +134,7 @@ class WebpImage final : public Image {
         width = getLe24(d.data() + 4) + 1;
         height = getLe24(d.data() + 7) + 1;
       }
-      flags = static_cast<std::uint8_t>(flags & ~(kFlagExif | kFlagXmp));
+      flags = static_cast<std::uint8_t>(flags & ~(kFlagExif | kFlagXmp | kFlagIcc));
       if (icc) flags |= kFlagIcc;
       if (alpha) flags |= kFlagAlpha;
       if (animation) flags |= kFlagAnimation;
@@ -163,21 +163,31 @@ class WebpImage final : public Image {
     const auto known = [](const std::string& f) {
       return f == "ICCP" || f == "ANIM" || f == "ANMF" || f == "ALPH" || f == "VP8 " || f == "VP8L";
     };
+    Bytes iccChunk;
+    if (iccChanged_ && !icc_.empty()) {
+      if (icc_.size() > 0xfffffff0u) throw Error(ErrorCode::dataTooLarge, "WebP chunk too large");
+      append(iccChunk, std::string_view("ICCP"));
+      appendLe32(iccChunk, static_cast<std::uint32_t>(icc_.size()));
+      append(iccChunk, icc_);
+      if (icc_.size() & 1) iccChunk.push_back(0);
+    }
     std::vector<const Chunk*> kept, unknown;
     for (const auto& c : chunks) {
       if (c.fourcc == "VP8X" || c.fourcc == "EXIF" || c.fourcc == "XMP ") continue;
+      if (c.fourcc == "ICCP" && iccChanged_) continue;
       (known(c.fourcc) ? kept : unknown).push_back(&c);
     }
-    std::uint64_t total = 4 + header.size() + trailer.size();
+    std::uint64_t total = 4 + header.size() + iccChunk.size() + trailer.size();
     for (const auto* list : {&kept, &unknown}) {
       for (const auto* c : *list) total += 8 + static_cast<std::uint64_t>(c->size) + (c->size & 1);
     }
     if (total > 0xfffffff0u) throw Error(ErrorCode::dataTooLarge, "WebP exceeds 4 GB");
 
     std::uint8_t riff[12] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'};
-    put32(riff + 4, static_cast<std::uint32_t>(total), ByteOrder::littleEndian);
+    put32(riff + 4, static_cast<std::uint32_t>(total), ByteOrder::little);
     sink.write(riff, sizeof riff);
     sink.write(header);
+    sink.write(iccChunk);
     const auto copy = [&](const Chunk* c) {
       sink.copyFrom(src, c->offset, 8 + static_cast<std::uint64_t>(c->size));
       if (c->size & 1) {
@@ -193,8 +203,8 @@ class WebpImage final : public Image {
 
 }  // namespace
 
-std::unique_ptr<Image> newWebpImage(std::unique_ptr<InputSource> source) {
-  return std::make_unique<WebpImage>(std::move(source));
+std::unique_ptr<ImageFile> newWebpFile(std::unique_ptr<InputSource> source) {
+  return std::make_unique<WebpFile>(std::move(source));
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

@@ -1,6 +1,6 @@
 #include "testing.hpp"
 
-using namespace photos;
+using namespace lumenlib;
 using testing::load;
 using testing::roundTrip;
 
@@ -8,6 +8,7 @@ TEST(date_time_parsing) {
   auto d = DateTime::parse("2024:05:17 18:42:07");
   CHECK(d.has_value());
   CHECK_EQ(d->toIso8601(), "2024-05-17T18:42:07");
+  CHECK_EQ(d->toExif(), "2024:05:17 18:42:07");
   d = DateTime::parse("2024-05-17T18:42:07.25+02:00");
   CHECK_EQ(*d->millisecond, 250);
   CHECK_EQ(*d->utcOffsetMinutes, 120);
@@ -22,8 +23,8 @@ TEST(date_time_parsing) {
 }
 
 TEST(photo_info_from_jpeg) {
-  const auto image = load("photo.jpg");
-  const PhotoInfo info = readPhotoInfo(*image);
+  const auto file = load("photo.jpg");
+  const PhotoInfo info = readPhotoInfo(*file);
   CHECK(info.dateTaken.has_value());
   CHECK_EQ(info.dateTaken->toIso8601(), "2024-05-17T18:42:07.250+02:00");
   CHECK_EQ(*info.orientation, 6);
@@ -47,12 +48,12 @@ TEST(photo_info_from_jpeg) {
 }
 
 TEST(photo_info_setters_round_trip) {
-  auto image = load("photo.jpg");
-  setOrientation(*image, 8);
-  setRating(*image, 5);
-  setKeywords(*image, {"sea", "night"});
-  setTitle(*image, "New title");
-  setDescription(*image, "New description");
+  auto file = load("photo.jpg");
+  setOrientation(*file, 8);
+  setRating(*file, 5);
+  setKeywords(*file, {"sea", "night"});
+  setTitle(*file, "New title");
+  setDescription(*file, "New description");
   DateTime date;
   date.year = 2023;
   date.month = 12;
@@ -62,42 +63,48 @@ TEST(photo_info_setters_round_trip) {
   date.second = 58;
   date.millisecond = 5;
   date.utcOffsetMinutes = -330;
-  setDateTaken(*image, date);
-  setGpsPosition(*image, {-33.856784, 151.215297, -2.5});
+  setDateTaken(*file, date);
+  setGpsPosition(*file, {-33.856784, 151.215297, -2.5});
 
-  const auto again = roundTrip(*image);
+  const auto again = roundTrip(*file);
   const PhotoInfo info = readPhotoInfo(*again);
   CHECK_EQ(*info.orientation, 8);
   CHECK_EQ(*info.rating, 5);
   CHECK((info.keywords == std::vector<std::string>{"sea", "night"}));
-  CHECK((again->iptcData().values("Iptc.Application2.Keywords") == std::vector<std::string>{"sea", "night"}));
+  CHECK((again->iptc().values("Keywords") == std::vector<std::string>{"sea", "night"}));
   CHECK_EQ(info.title, "New title");
   CHECK_EQ(info.description, "New description");
-  CHECK_EQ(again->exifData().find("Exif.Image.ImageDescription")->toString(), "New description");
+  CHECK_EQ(again->exif().find("ifd0.ImageDescription")->text(), "New description");
   CHECK_EQ(info.dateTaken->toIso8601(), "2023-12-31T23:59:58.005-05:30");
-  CHECK_EQ(again->exifData().find("Exif.Photo.OffsetTimeOriginal")->toString(), "-05:30");
-  CHECK_EQ(again->iptcData().find("Iptc.Application2.TimeCreated")->toString(), "235958-0530");
+  CHECK_EQ(again->exif().find("exif.OffsetTimeOriginal")->text(), "-05:30");
+  CHECK_EQ(*again->iptc().value("TimeCreated"), "235958-0530");
   CHECK_NEAR(info.gps->latitude, -33.856784, 1e-6);
   CHECK_NEAR(info.gps->longitude, 151.215297, 1e-6);
   CHECK_NEAR(*info.gps->altitude, -2.5, 1e-9);
-  CHECK_EQ(again->exifData().find("Exif.GPSInfo.GPSLatitudeRef")->toString(), "S");
+  CHECK_EQ(again->exif().find("gps.GPSLatitudeRef")->text(), "S");
 
-  CHECK_THROWS(setRating(*image, 6), ErrorCode::invalidArgument);
-  CHECK_THROWS(setOrientation(*image, 0), ErrorCode::invalidArgument);
-  CHECK_THROWS(setGpsPosition(*image, {91, 0, std::nullopt}), ErrorCode::invalidArgument);
+  CHECK_THROWS(setRating(*file, 6), ErrorCode::invalidArgument);
+  CHECK_THROWS(setOrientation(*file, 0), ErrorCode::invalidArgument);
+  CHECK_THROWS(setGpsPosition(*file, {91, 0, std::nullopt}), ErrorCode::invalidArgument);
+}
+
+TEST(photo_info_gps_seconds_that_round_up_carry) {
+  auto file = load("bare.jpg");
+  setGpsPosition(*file, {10.999999999, 20, std::nullopt});
+  CHECK_EQ(file->exif().find("gps.GPSLatitude")->text(), "11/1 0/1 0/10000");
 }
 
 TEST(photo_info_setters_on_a_sidecar_use_xmp) {
-  auto image = Image::createXmpSidecar();
-  setOrientation(*image, 6);
-  setGpsPosition(*image, {48.8584, 2.2945, 35});
+  auto file = ImageFile::newXmpSidecar();
+  setOrientation(*file, 6);
+  setGpsPosition(*file, {48.8584, 2.2945, 35});
   DateTime date;
   date.year = 2020;
   date.month = 2;
   date.day = 29;
-  setDateTaken(*image, date);
-  CHECK(image->exifData().empty());
-  const auto again = roundTrip(*image);
+  setDateTaken(*file, date);
+  CHECK(file->exif().empty());
+  const auto again = roundTrip(*file);
   const PhotoInfo info = readPhotoInfo(*again);
   CHECK_EQ(*info.orientation, 6);
   CHECK_NEAR(info.gps->latitude, 48.8584, 1e-6);
@@ -107,11 +114,11 @@ TEST(photo_info_setters_on_a_sidecar_use_xmp) {
 }
 
 TEST(photo_info_clearing) {
-  auto image = load("photo.jpg");
-  setKeywords(*image, {});
-  setTitle(*image, "");
-  eraseGpsPosition(*image);
-  const auto again = roundTrip(*image);
+  auto file = load("photo.jpg");
+  setKeywords(*file, {});
+  setTitle(*file, "");
+  eraseGpsPosition(*file);
+  const auto again = roundTrip(*file);
   const PhotoInfo info = readPhotoInfo(*again);
   CHECK(info.keywords.empty());
   CHECK(info.title.empty());

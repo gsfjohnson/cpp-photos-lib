@@ -1,5 +1,5 @@
-#include <photos/error.hpp>
-#include <photos/io.hpp>
+#include <lumenlib/error.hpp>
+#include <lumenlib/io.hpp>
 
 #include "formats.hpp"
 
@@ -7,7 +7,7 @@
 #include <cstring>
 #include <limits>
 
-namespace photos {
+namespace lumenlib {
 
 InputSource::~InputSource() = default;
 OutputSink::~OutputSink() = default;
@@ -82,4 +82,4 @@ void FileSink::close() {
   if (!stream_) throw Error(ErrorCode::io, "cannot write " + detail::pathText(path_));
 }
 
-}  // namespace photos
+}  // namespace lumenlib

@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 
 struct XmlAttribute {
   std::string uri;
@@ -45,4 +45,4 @@ std::unique_ptr<XmlElement> parseXml(std::string_view document);
 // Escapes text for element content or attribute values.
 std::string escapeXml(std::string_view text);
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

@@ -1,40 +1,51 @@
-#include <photos/error.hpp>
-#include <photos/exif.hpp>
+#include <lumenlib/error.hpp>
+#include <lumenlib/exif.hpp>
+#include <lumenlib/makernote.hpp>
 
 #include "exif_internal.hpp"
+#include "formats.hpp"
 #include "strings.hpp"
 
 #include <algorithm>
 
-namespace photos {
+namespace lumenlib {
 
-const char* groupName(IfdId ifd) noexcept {
+const char* ifdName(Ifd ifd) noexcept {
   switch (ifd) {
-    case IfdId::ifd0:
-      return "Image";
-    case IfdId::exif:
-      return "Photo";
-    case IfdId::gps:
-      return "GPSInfo";
-    case IfdId::interop:
-      return "Iop";
-    case IfdId::ifd1:
-      return "Thumbnail";
+    case Ifd::ifd0:
+      return "ifd0";
+    case Ifd::exif:
+      return "exif";
+    case Ifd::gps:
+      return "gps";
+    case Ifd::interop:
+      return "interop";
+    case Ifd::ifd1:
+      return "ifd1";
   }
-  return "Unknown";
+  return "unknown";
+}
+
+std::optional<Ifd> ifdFromName(std::string_view name) noexcept {
+  for (auto ifd : {Ifd::ifd0, Ifd::exif, Ifd::gps, Ifd::interop, Ifd::ifd1}) {
+    if (name == ifdName(ifd)) return ifd;
+  }
+  return std::nullopt;
 }
 
 namespace {
 
-constexpr IfdId kAllIfds[] = {IfdId::ifd0, IfdId::exif, IfdId::gps, IfdId::interop, IfdId::ifd1};
+// Where a bare tag name is looked for: the Exif-specific IFDs first, so the
+// TIFF/EP copies of Exif tags in IFD0 do not win.
+constexpr Ifd kBareNameOrder[] = {Ifd::exif, Ifd::gps, Ifd::interop, Ifd::ifd0};
 
 // The Exif comment tags hold a character code and text.
-bool isCommentTag(const ExifKey& key) {
-  return (key.ifd() == IfdId::exif && key.tag() == 0x9286) ||
-         (key.ifd() == IfdId::gps && (key.tag() == 0x001b || key.tag() == 0x001c));
+bool isCommentTag(const ExifTag& tag) {
+  return (tag.ifd() == Ifd::exif && tag.number() == 0x9286) ||
+         (tag.ifd() == Ifd::gps && (tag.number() == 0x001b || tag.number() == 0x001c));
 }
 
-Value commentValue(std::string_view text) {
+FieldValue commentValue(std::string_view text) {
   Bytes b;
   if (detail::isAscii(text)) {
     const char code[8] = {'A', 'S', 'C', 'I', 'I', 0, 0, 0};
@@ -79,192 +90,212 @@ Value commentValue(std::string_view text) {
       }
     }
   }
-  return Value::bytes(TypeId::undefined, std::move(b));
+  return FieldValue::fromBytes(FieldType::undefined, std::move(b));
+}
+
+FieldValue integerValue(FieldType type, std::int64_t v) {
+  switch (type) {
+    case FieldType::u8:
+    case FieldType::i8:
+    case FieldType::undefined:
+    case FieldType::u16:
+    case FieldType::i16:
+    case FieldType::u32:
+    case FieldType::i32:
+    case FieldType::ifd:
+    case FieldType::urational:
+    case FieldType::srational:
+      return FieldValue::integers(type, {v});
+    case FieldType::f32:
+    case FieldType::f64:
+      return FieldValue::reals(type, {static_cast<double>(v)});
+    case FieldType::ascii:
+      return FieldValue::ascii(std::to_string(v));
+  }
+  return FieldValue::integers(FieldType::i32, {v});
 }
 
 }  // namespace
 
-// ---- ExifKey ------------------------------------------------------------------
+// ---- ExifTag ------------------------------------------------------------------
 
-ExifKey::ExifKey(std::string_view key) : ifd_(IfdId::ifd0), tag_(0) {
-  const auto bad = [&] { return Error(ErrorCode::invalidArgument, "invalid Exif key '" + std::string(key) + "'"); };
-  if (key.substr(0, 5) != "Exif.") throw bad();
-  const auto rest = key.substr(5);
-  const auto dot = rest.find('.');
-  if (dot == std::string_view::npos) throw bad();
-  const auto group = rest.substr(0, dot);
-  const auto name = rest.substr(dot + 1);
-  bool found = false;
-  for (auto ifd : kAllIfds) {
-    if (group == photos::groupName(ifd)) {
-      ifd_ = ifd;
-      found = true;
-      break;
+std::optional<ExifTag> ExifTag::parse(std::string_view text) noexcept {
+  const auto dot = text.find('.');
+  if (dot == std::string_view::npos) {
+    if (text.empty()) return std::nullopt;
+    for (auto ifd : kBareNameOrder) {
+      if (const auto* spec = lookupExifTag(ifd, text)) return ExifTag(ifd, spec->number);
     }
+    return std::nullopt;
   }
-  if (!found || name.empty()) throw bad();
-  if (const auto* info = findExifTag(ifd_, name)) {
-    tag_ = info->tag;
-    return;
-  }
+  const auto ifd = ifdFromName(text.substr(0, dot));
+  const auto name = text.substr(dot + 1);
+  if (!ifd || name.empty()) return std::nullopt;
+  if (const auto* spec = lookupExifTag(*ifd, name)) return ExifTag(*ifd, spec->number);
   if (name.size() > 2 && name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) {
     const auto n = detail::parseInt(name);
-    if (n && *n >= 0 && *n <= 0xffff) {
-      tag_ = static_cast<std::uint16_t>(*n);
-      return;
-    }
+    if (n && *n >= 0 && *n <= 0xffff) return ExifTag(*ifd, static_cast<std::uint16_t>(*n));
   }
-  throw bad();
+  return std::nullopt;
 }
 
-std::string ExifKey::tagName() const {
-  if (const auto* i = info()) return i->name;
-  return detail::hex4(tag_);
+ExifTag::ExifTag(std::string_view text) : ifd_(Ifd::ifd0), number_(0) {
+  const auto tag = parse(text);
+  if (!tag) throw Error(ErrorCode::invalidArgument, "invalid Exif tag '" + std::string(text) + "'");
+  *this = *tag;
 }
 
-std::string ExifKey::str() const { return std::string("Exif.") + photos::groupName(ifd_) + "." + tagName(); }
-
-// ---- ExifDatum ----------------------------------------------------------------
-
-ExifDatum::ExifDatum(ExifKey key, Value value) : key_(key), value_(std::move(value)) {}
-
-TypeId ExifDatum::defaultType() const noexcept {
-  if (const auto* i = key_.info()) return i->type;
-  return value_.typeId();
+std::string ExifTag::name() const {
+  if (const auto* s = spec()) return s->name;
+  return detail::hex4(number_);
 }
 
-ExifDatum& ExifDatum::operator=(std::string_view text) {
-  if (isCommentTag(key_)) {
+std::string ExifTag::str() const { return std::string(ifdName(ifd_)) + "." + name(); }
+
+// ---- ExifEntry ----------------------------------------------------------------
+
+ExifEntry::ExifEntry(ExifTag tag, FieldValue value) : tag_(tag), value_(std::move(value)) {}
+
+FieldType ExifEntry::defaultType() const noexcept {
+  if (const auto* s = tag_.spec()) return s->type;
+  return value_.type();
+}
+
+void ExifEntry::setText(std::string_view text) {
+  if (isCommentTag(tag_)) {
     value_ = commentValue(text);
   } else {
-    value_ = Value::fromString(defaultType(), text);
-  }
-  return *this;
-}
-
-namespace {
-
-Value integerValue(TypeId type, std::int64_t v) {
-  switch (type) {
-    case TypeId::unsignedByte:
-    case TypeId::signedByte:
-    case TypeId::undefined:
-    case TypeId::unsignedShort:
-    case TypeId::signedShort:
-    case TypeId::unsignedLong:
-    case TypeId::signedLong:
-    case TypeId::tiffIfd:
-    case TypeId::unsignedRational:
-    case TypeId::signedRational:
-      return Value::integers(type, {v});
-    case TypeId::tiffFloat:
-    case TypeId::tiffDouble:
-      return Value::reals(type, {static_cast<double>(v)});
-    case TypeId::asciiString:
-      return Value::ascii(std::to_string(v));
-  }
-  return Value::integers(TypeId::signedLong, {v});
-}
-
-}  // namespace
-
-ExifDatum& ExifDatum::operator=(std::uint16_t v) {
-  value_ = integerValue(defaultType(), v);
-  return *this;
-}
-
-ExifDatum& ExifDatum::operator=(std::uint32_t v) {
-  value_ = integerValue(defaultType(), v);
-  return *this;
-}
-
-ExifDatum& ExifDatum::operator=(std::int32_t v) {
-  value_ = integerValue(defaultType(), v);
-  return *this;
-}
-
-ExifDatum& ExifDatum::operator=(const Rational& v) {
-  TypeId type = defaultType();
-  if (type != TypeId::unsignedRational && type != TypeId::signedRational) {
-    type = (v.numerator < 0 || v.denominator < 0) ? TypeId::signedRational : TypeId::unsignedRational;
-  }
-  value_ = Value::rationals(type, {v});
-  return *this;
-}
-
-// ---- ExifData -----------------------------------------------------------------
-
-ExifDatum& ExifData::operator[](std::string_view key) {
-  const ExifKey k(key);
-  auto it = findKey(k);
-  if (it != data_.end()) return *it;
-  const auto* info = k.info();
-  data_.emplace_back(k, Value(info ? info->type : TypeId::undefined));
-  return data_.back();
-}
-
-void ExifData::add(ExifDatum datum) { data_.push_back(std::move(datum)); }
-
-ExifData::iterator ExifData::findKey(const ExifKey& key) {
-  return std::find_if(data_.begin(), data_.end(), [&](const ExifDatum& d) { return d.exifKey() == key; });
-}
-
-ExifData::const_iterator ExifData::findKey(const ExifKey& key) const {
-  return std::find_if(data_.begin(), data_.end(), [&](const ExifDatum& d) { return d.exifKey() == key; });
-}
-
-ExifDatum* ExifData::find(std::string_view key) {
-  try {
-    auto it = findKey(ExifKey(key));
-    return it == data_.end() ? nullptr : &*it;
-  } catch (const Error&) {
-    return nullptr;
+    value_ = FieldValue::parse(defaultType(), text);
   }
 }
 
-const ExifDatum* ExifData::find(std::string_view key) const {
-  try {
-    auto it = findKey(ExifKey(key));
-    return it == data_.end() ? nullptr : &*it;
-  } catch (const Error&) {
-    return nullptr;
+void ExifEntry::setInt(std::int64_t v) { value_ = integerValue(defaultType(), v); }
+
+void ExifEntry::setRational(const Rational& v) {
+  FieldType type = defaultType();
+  if (type != FieldType::urational && type != FieldType::srational) {
+    type = (v.numerator < 0 || v.denominator < 0) ? FieldType::srational : FieldType::urational;
   }
+  value_ = FieldValue::rationals(type, {v});
 }
 
-ExifData::iterator ExifData::erase(iterator pos) { return data_.erase(pos); }
+// ---- ExifMetadata -------------------------------------------------------------
 
-std::size_t ExifData::erase(std::string_view key) {
-  const ExifKey k(key);
-  const auto before = data_.size();
-  data_.erase(std::remove_if(data_.begin(), data_.end(), [&](const ExifDatum& d) { return d.exifKey() == k; }),
-              data_.end());
-  return before - data_.size();
+ExifMetadata::ExifMetadata() = default;
+ExifMetadata::~ExifMetadata() = default;
+ExifMetadata::ExifMetadata(const ExifMetadata&) = default;
+ExifMetadata::ExifMetadata(ExifMetadata&&) noexcept = default;
+ExifMetadata& ExifMetadata::operator=(const ExifMetadata&) = default;
+ExifMetadata& ExifMetadata::operator=(ExifMetadata&&) noexcept = default;
+
+ExifEntry* ExifMetadata::find(const ExifTag& tag) {
+  const auto it = std::find_if(entries_.begin(), entries_.end(), [&](const ExifEntry& e) { return e.tag() == tag; });
+  return it == entries_.end() ? nullptr : &*it;
 }
 
-void ExifData::clear() {
-  data_.clear();
+const ExifEntry* ExifMetadata::find(const ExifTag& tag) const { return const_cast<ExifMetadata*>(this)->find(tag); }
+
+ExifEntry* ExifMetadata::find(std::string_view tag) {
+  const auto t = ExifTag::parse(tag);
+  return t ? find(*t) : nullptr;
+}
+
+const ExifEntry* ExifMetadata::find(std::string_view tag) const { return const_cast<ExifMetadata*>(this)->find(tag); }
+
+ExifEntry& ExifMetadata::entry(const ExifTag& tag) {
+  if (auto* e = find(tag)) return *e;
+  const auto* spec = tag.spec();
+  entries_.emplace_back(tag, FieldValue(spec ? spec->type : FieldType::undefined));
+  return entries_.back();
+}
+
+ExifEntry& ExifMetadata::entry(std::string_view tag) { return entry(ExifTag(tag)); }
+
+ExifEntry& ExifMetadata::set(const ExifTag& tag, FieldValue value) {
+  // Duplicates after the first go; the first keeps its position.
+  bool first = true;
+  removeIf([&](const ExifEntry& e) {
+    if (e.tag() != tag) return false;
+    if (first) {
+      first = false;
+      return false;
+    }
+    return true;
+  });
+  ExifEntry& e = entry(tag);
+  e.setValue(std::move(value));
+  return e;
+}
+
+ExifEntry& ExifMetadata::set(std::string_view tag, FieldValue value) { return set(ExifTag(tag), std::move(value)); }
+
+ExifEntry& ExifMetadata::setText(std::string_view tag, std::string_view text) {
+  const ExifTag t(tag);
+  ExifEntry probe(t, find(t) ? find(t)->value() : FieldValue(t.spec() ? t.spec()->type : FieldType::undefined));
+  probe.setText(text);  // parse before changing anything
+  return set(t, probe.value());
+}
+
+ExifEntry& ExifMetadata::setInt(std::string_view tag, std::int64_t value) {
+  const ExifTag t(tag);
+  ExifEntry probe(t, find(t) ? find(t)->value() : FieldValue(t.spec() ? t.spec()->type : FieldType::undefined));
+  probe.setInt(value);
+  return set(t, probe.value());
+}
+
+ExifEntry& ExifMetadata::setRational(std::string_view tag, const Rational& value) {
+  const ExifTag t(tag);
+  ExifEntry probe(t, find(t) ? find(t)->value() : FieldValue(t.spec() ? t.spec()->type : FieldType::undefined));
+  probe.setRational(value);
+  return set(t, probe.value());
+}
+
+void ExifMetadata::append(ExifEntry entry) { entries_.push_back(std::move(entry)); }
+
+ExifMetadata::iterator ExifMetadata::erase(iterator pos) { return entries_.erase(pos); }
+
+std::size_t ExifMetadata::remove(const ExifTag& tag) {
+  return removeIf([&](const ExifEntry& e) { return e.tag() == tag; });
+}
+
+std::size_t ExifMetadata::remove(std::string_view tag) {
+  const auto t = ExifTag::parse(tag);
+  if (!t) throw Error(ErrorCode::invalidArgument, "invalid Exif tag '" + std::string(tag) + "'");
+  return remove(*t);
+}
+
+void ExifMetadata::clear() {
+  entries_.clear();
   thumbnail_.clear();
   origin_.reset();
+  makerNote_.reset();
+  makerNoteOrigin_.reset();
 }
 
-void ExifData::sortByKey() {
-  std::stable_sort(data_.begin(), data_.end(), [](const ExifDatum& a, const ExifDatum& b) {
-    if (a.ifd() != b.ifd()) return a.ifd() < b.ifd();
-    return a.tag() < b.tag();
-  });
+void ExifMetadata::sort() {
+  std::stable_sort(entries_.begin(), entries_.end(),
+                   [](const ExifEntry& a, const ExifEntry& b) { return a.tag() < b.tag(); });
 }
 
-void ExifData::setThumbnail(Bytes jpeg) {
+void ExifMetadata::setThumbnail(Bytes jpeg) {
   thumbnail_ = std::move(jpeg);
-  if (!thumbnail_.empty() && findKey(ExifKey(IfdId::ifd1, 0x0103)) == data_.end()) {
-    add(ExifKey(IfdId::ifd1, 0x0103), Value::integers(TypeId::unsignedShort, {6}));
+  if (!thumbnail_.empty() && !find(ExifTag(Ifd::ifd1, 0x0103))) {
+    append(ExifTag(Ifd::ifd1, 0x0103), FieldValue::integers(FieldType::u16, {6}));
   }
 }
 
-void ExifData::eraseThumbnail() {
+void ExifMetadata::removeThumbnail() {
   thumbnail_.clear();
-  data_.erase(std::remove_if(data_.begin(), data_.end(), [](const ExifDatum& d) { return d.ifd() == IfdId::ifd1; }),
-              data_.end());
+  removeIf([](const ExifEntry& e) { return e.ifd() == Ifd::ifd1; });
 }
 
-}  // namespace photos
+Bytes ExifMetadata::encode() const { return detail::encodeExif(*this); }
+
+ExifMetadata ExifMetadata::decode(const std::uint8_t* data, std::size_t size) {
+  detail::stripExifPrefix(data, size);
+  ExifMetadata exif;
+  detail::decodeTiff(data, size, exif);
+  return exif;
+}
+
+}  // namespace lumenlib

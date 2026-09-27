@@ -1,8 +1,9 @@
 # lumen-ios-deps
 
-> exiv2 is here because Lumen uses it today. The `photos` library in this
-> repository ([README](../README.md)) replaces it with MIT-licensed code; once
-> Lumen has moved over, exiv2 and expat can leave these packages.
+> exiv2 is here because Lumen uses it today. The `lumenlib` library in this
+> repository ([README](../README.md)) replaces it with MIT-licensed code
+> ([migrating.md](migrating.md)); once Lumen has moved over, exiv2 and expat
+> can leave these packages.
 
 The iOS libraries Lumen ([`../cpp-photos`](../../cpp-photos)) links that
 redwain's iOS packages do not carry, built once per slice into a prefix an iOS

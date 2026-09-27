@@ -1,6 +1,11 @@
-#include <photos/error.hpp>
+#include <lumenlib/error.hpp>
 
-namespace photos {
+#include "bytes.hpp"
+
+#include <memory>
+#include <mutex>
+
+namespace lumenlib {
 
 const char* toString(ErrorCode code) noexcept {
   switch (code) {
@@ -23,4 +28,32 @@ const char* toString(ErrorCode code) noexcept {
 Error::Error(ErrorCode code, const std::string& message)
     : std::runtime_error(std::string(toString(code)) + ": " + message), code_(code) {}
 
-}  // namespace photos
+namespace {
+
+// The handler is shared, so a call in progress keeps the one it started with
+// while another thread replaces it.
+std::mutex warningMutex;
+std::shared_ptr<const WarningHandler> warningHandler;
+
+}  // namespace
+
+void setWarningHandler(WarningHandler handler) {
+  std::lock_guard<std::mutex> lock(warningMutex);
+  warningHandler = handler ? std::make_shared<const WarningHandler>(std::move(handler)) : nullptr;
+}
+
+void detail::warn(const std::string& message) {
+  std::shared_ptr<const WarningHandler> handler;
+  {
+    std::lock_guard<std::mutex> lock(warningMutex);
+    handler = warningHandler;
+  }
+  if (!handler) return;
+  try {
+    (*handler)(message);
+  } catch (...) {
+    // A handler's failure is not the file's.
+  }
+}
+
+}  // namespace lumenlib

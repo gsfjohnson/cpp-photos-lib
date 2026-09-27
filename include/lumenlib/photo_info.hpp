@@ -6,17 +6,17 @@
 // (title, description, keywords, rating), IPTC after XMP.
 #pragma once
 
-#include <photos/export.hpp>
-#include <photos/image.hpp>
+#include <lumenlib/export.hpp>
+#include <lumenlib/image_file.hpp>
 
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
-namespace photos {
+namespace lumenlib {
 
-struct PHOTOS_EXPORT DateTime {
+struct LUMENLIB_EXPORT DateTime {
   int year = 0, month = 0, day = 0;
   int hour = 0, minute = 0, second = 0;
   // Milliseconds, from SubSecTime* or a fractional XMP second.
@@ -26,6 +26,8 @@ struct PHOTOS_EXPORT DateTime {
 
   // "YYYY-MM-DDTHH:MM:SS[.mmm][+HH:MM]"
   std::string toIso8601() const;
+  // "YYYY:MM:DD HH:MM:SS", as Exif writes dates.
+  std::string toExif() const;
   // Accepts Exif ("YYYY:MM:DD HH:MM:SS") and ISO 8601 / XMP forms, with
   // missing trailing parts. std::nullopt when unparseable or all zero.
   static std::optional<DateTime> parse(const std::string& text);
@@ -42,12 +44,14 @@ struct PhotoInfo {
   std::optional<DateTime> dateDigitized;
   // Exif orientation, 1..8.
   std::optional<int> orientation;
-  // From Exif pixel dimensions or the image's headers.
+  // From the image's headers, or the Exif pixel dimensions.
   std::uint32_t width = 0;
   std::uint32_t height = 0;
 
   std::string cameraMake;
   std::string cameraModel;
+  // exif.LensModel, XMP's lens, or what the maker note says (see
+  // lensDescription in makernote.hpp).
   std::string lensModel;
   std::optional<double> exposureTime;  // seconds
   std::optional<double> fNumber;
@@ -67,30 +71,33 @@ struct PhotoInfo {
   std::optional<int> rating;
 };
 
-// Reads everything above from the image's metadata (call readMetadata first).
-PHOTOS_EXPORT PhotoInfo readPhotoInfo(const Image& image);
+// Reads everything above from the file's metadata (call load() first).
+LUMENLIB_EXPORT PhotoInfo readPhotoInfo(const ImageFile& file);
 
 // The setters update every place the value is kept, so other applications
-// see the change whichever they read. They change the image's metadata only;
-// call Image::writeMetadata() to save.
+// see the change whichever they read. They change the file's metadata only;
+// call ImageFile::save() to write it.
 
-// Exif.Image.Orientation (and Xmp.tiff.Orientation when present).
-PHOTOS_EXPORT void setOrientation(Image& image, int orientation);
-// Xmp.xmp.Rating (and Xmp.MicrosoftPhoto.Rating as a percentage when present).
-// Throws Error(invalidArgument) outside -1..5.
-PHOTOS_EXPORT void setRating(Image& image, int rating);
-// Xmp.dc.subject, and Iptc.Application2.Keywords when the image has IPTC.
-PHOTOS_EXPORT void setKeywords(Image& image, const std::vector<std::string>& keywords);
-// Xmp.dc.title, and Iptc.Application2.ObjectName when the image has IPTC.
-PHOTOS_EXPORT void setTitle(Image& image, const std::string& title);
-// Xmp.dc.description, Exif.Image.ImageDescription, and
-// Iptc.Application2.Caption when the image has IPTC.
-PHOTOS_EXPORT void setDescription(Image& image, const std::string& description);
-// Exif DateTimeOriginal (+ OffsetTimeOriginal, SubSecTimeOriginal),
-// Xmp.photoshop.DateCreated, and IPTC DateCreated/TimeCreated when present.
-PHOTOS_EXPORT void setDateTaken(Image& image, const DateTime& date);
-// The Exif GPS IFD (version 2.3), replacing any GPS position.
-PHOTOS_EXPORT void setGpsPosition(Image& image, const GpsPosition& position);
-PHOTOS_EXPORT void eraseGpsPosition(Image& image);
+// ifd0.Orientation (and tiff:Orientation when present, or on a file without
+// Exif).
+LUMENLIB_EXPORT void setOrientation(ImageFile& file, int orientation);
+// xmp:Rating (and MicrosoftPhoto:Rating as a percentage, ifd0.Rating and
+// ifd0.RatingPercent when present). Throws Error(invalidArgument) outside
+// -1..5.
+LUMENLIB_EXPORT void setRating(ImageFile& file, int rating);
+// dc:subject, and the IPTC Keywords when the file has IPTC.
+LUMENLIB_EXPORT void setKeywords(ImageFile& file, const std::vector<std::string>& keywords);
+// dc:title, and the IPTC ObjectName when the file has IPTC.
+LUMENLIB_EXPORT void setTitle(ImageFile& file, const std::string& title);
+// dc:description, ifd0.ImageDescription, and the IPTC CaptionAbstract when
+// the file has IPTC.
+LUMENLIB_EXPORT void setDescription(ImageFile& file, const std::string& description);
+// exif.DateTimeOriginal (+ OffsetTimeOriginal, SubSecTimeOriginal),
+// photoshop:DateCreated, and the IPTC DateCreated/TimeCreated when present.
+LUMENLIB_EXPORT void setDateTaken(ImageFile& file, const DateTime& date);
+// The GPS IFD (version 2.3), replacing any GPS position; exif:GPS* on a
+// file without Exif.
+LUMENLIB_EXPORT void setGpsPosition(ImageFile& file, const GpsPosition& position);
+LUMENLIB_EXPORT void eraseGpsPosition(ImageFile& file);
 
-}  // namespace photos
+}  // namespace lumenlib

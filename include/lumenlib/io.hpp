@@ -3,17 +3,17 @@
 // from a content URI, an iOS NSData) by subclassing it.
 #pragma once
 
-#include <photos/export.hpp>
-#include <photos/types.hpp>
+#include <lumenlib/export.hpp>
+#include <lumenlib/types.hpp>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 
-namespace photos {
+namespace lumenlib {
 
-class PHOTOS_EXPORT InputSource {
+class LUMENLIB_EXPORT InputSource {
  public:
   virtual ~InputSource();
 
@@ -28,7 +28,7 @@ class PHOTOS_EXPORT InputSource {
   bool contains(std::uint64_t offset, std::uint64_t n) const;
 };
 
-class PHOTOS_EXPORT MemorySource final : public InputSource {
+class LUMENLIB_EXPORT MemorySource final : public InputSource {
  public:
   explicit MemorySource(Bytes data) : data_(std::move(data)) {}
 
@@ -41,7 +41,7 @@ class PHOTOS_EXPORT MemorySource final : public InputSource {
 };
 
 // Not thread-safe: reads share one stream.
-class PHOTOS_EXPORT FileSource final : public InputSource {
+class LUMENLIB_EXPORT FileSource final : public InputSource {
  public:
   // Throws Error(io) if the file cannot be opened.
   explicit FileSource(const std::filesystem::path& path);
@@ -56,7 +56,7 @@ class PHOTOS_EXPORT FileSource final : public InputSource {
   std::uint64_t size_ = 0;
 };
 
-class PHOTOS_EXPORT OutputSink {
+class LUMENLIB_EXPORT OutputSink {
  public:
   virtual ~OutputSink();
   // Throws Error(io) when writing fails.
@@ -67,7 +67,7 @@ class PHOTOS_EXPORT OutputSink {
   void copyFrom(const InputSource& source, std::uint64_t offset, std::uint64_t n);
 };
 
-class PHOTOS_EXPORT MemorySink final : public OutputSink {
+class LUMENLIB_EXPORT MemorySink final : public OutputSink {
  public:
   void write(const void* data, std::size_t n) override;
   const Bytes& data() const noexcept { return data_; }
@@ -77,7 +77,7 @@ class PHOTOS_EXPORT MemorySink final : public OutputSink {
   Bytes data_;
 };
 
-class PHOTOS_EXPORT FileSink final : public OutputSink {
+class LUMENLIB_EXPORT FileSink final : public OutputSink {
  public:
   // Creates or truncates the file. Throws Error(io).
   explicit FileSink(const std::filesystem::path& path);
@@ -91,4 +91,4 @@ class PHOTOS_EXPORT FileSink final : public OutputSink {
   std::ofstream stream_;
 };
 
-}  // namespace photos
+}  // namespace lumenlib

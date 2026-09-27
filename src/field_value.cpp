@@ -1,5 +1,5 @@
-#include <photos/error.hpp>
-#include <photos/value.hpp>
+#include <lumenlib/error.hpp>
+#include <lumenlib/field_value.hpp>
 
 #include "bytes.hpp"
 #include "strings.hpp"
@@ -10,122 +10,122 @@
 #include <limits>
 #include <sstream>
 
-namespace photos {
+namespace lumenlib {
 
 double Rational::toDouble() const noexcept {
   return denominator == 0 ? 0.0 : static_cast<double>(numerator) / static_cast<double>(denominator);
 }
 
-std::size_t typeSize(TypeId type) noexcept {
+std::size_t fieldTypeSize(FieldType type) noexcept {
   switch (type) {
-    case TypeId::unsignedByte:
-    case TypeId::asciiString:
-    case TypeId::signedByte:
-    case TypeId::undefined:
+    case FieldType::u8:
+    case FieldType::ascii:
+    case FieldType::i8:
+    case FieldType::undefined:
       return 1;
-    case TypeId::unsignedShort:
-    case TypeId::signedShort:
+    case FieldType::u16:
+    case FieldType::i16:
       return 2;
-    case TypeId::unsignedLong:
-    case TypeId::signedLong:
-    case TypeId::tiffFloat:
-    case TypeId::tiffIfd:
+    case FieldType::u32:
+    case FieldType::i32:
+    case FieldType::f32:
+    case FieldType::ifd:
       return 4;
-    case TypeId::unsignedRational:
-    case TypeId::signedRational:
-    case TypeId::tiffDouble:
+    case FieldType::urational:
+    case FieldType::srational:
+    case FieldType::f64:
       return 8;
   }
   return 0;
 }
 
-const char* typeName(TypeId type) noexcept {
+const char* fieldTypeName(FieldType type) noexcept {
   switch (type) {
-    case TypeId::unsignedByte:
-      return "Byte";
-    case TypeId::asciiString:
-      return "Ascii";
-    case TypeId::unsignedShort:
-      return "Short";
-    case TypeId::unsignedLong:
-      return "Long";
-    case TypeId::unsignedRational:
-      return "Rational";
-    case TypeId::signedByte:
-      return "SByte";
-    case TypeId::undefined:
-      return "Undefined";
-    case TypeId::signedShort:
-      return "SShort";
-    case TypeId::signedLong:
-      return "SLong";
-    case TypeId::signedRational:
-      return "SRational";
-    case TypeId::tiffFloat:
-      return "Float";
-    case TypeId::tiffDouble:
-      return "Double";
-    case TypeId::tiffIfd:
-      return "Ifd";
+    case FieldType::u8:
+      return "BYTE";
+    case FieldType::ascii:
+      return "ASCII";
+    case FieldType::u16:
+      return "SHORT";
+    case FieldType::u32:
+      return "LONG";
+    case FieldType::urational:
+      return "RATIONAL";
+    case FieldType::i8:
+      return "SBYTE";
+    case FieldType::undefined:
+      return "UNDEFINED";
+    case FieldType::i16:
+      return "SSHORT";
+    case FieldType::i32:
+      return "SLONG";
+    case FieldType::srational:
+      return "SRATIONAL";
+    case FieldType::f32:
+      return "FLOAT";
+    case FieldType::f64:
+      return "DOUBLE";
+    case FieldType::ifd:
+      return "IFD";
   }
-  return "Unknown";
+  return "UNKNOWN";
 }
 
-bool isValidType(std::uint16_t type) noexcept { return type >= 1 && type <= 13; }
+bool isFieldType(std::uint16_t type) noexcept { return type >= 1 && type <= 13; }
 
 namespace {
 
 enum class Storage { bytes, ints, rationals, reals };
 
-Storage storageOf(TypeId type) {
+Storage storageOf(FieldType type) {
   switch (type) {
-    case TypeId::unsignedByte:
-    case TypeId::asciiString:
-    case TypeId::signedByte:
-    case TypeId::undefined:
+    case FieldType::u8:
+    case FieldType::ascii:
+    case FieldType::i8:
+    case FieldType::undefined:
       return Storage::bytes;
-    case TypeId::unsignedShort:
-    case TypeId::signedShort:
-    case TypeId::unsignedLong:
-    case TypeId::signedLong:
-    case TypeId::tiffIfd:
+    case FieldType::u16:
+    case FieldType::i16:
+    case FieldType::u32:
+    case FieldType::i32:
+    case FieldType::ifd:
       return Storage::ints;
-    case TypeId::unsignedRational:
-    case TypeId::signedRational:
+    case FieldType::urational:
+    case FieldType::srational:
       return Storage::rationals;
-    case TypeId::tiffFloat:
-    case TypeId::tiffDouble:
+    case FieldType::f32:
+    case FieldType::f64:
       return Storage::reals;
   }
   throw Error(ErrorCode::invalidArgument, "unknown TIFF type");
 }
 
-void checkRange(TypeId type, std::int64_t v) {
+void checkRange(FieldType type, std::int64_t v) {
   std::int64_t lo = 0, hi = 0;
   switch (type) {
-    case TypeId::unsignedByte:
+    case FieldType::u8:
       hi = 0xff;
       break;
-    case TypeId::signedByte:
+    case FieldType::i8:
       lo = -128;
       hi = 127;
       break;
-    case TypeId::unsignedShort:
+    case FieldType::u16:
       hi = 0xffff;
       break;
-    case TypeId::signedShort:
+    case FieldType::i16:
       lo = -32768;
       hi = 32767;
       break;
-    case TypeId::unsignedLong:
-    case TypeId::tiffIfd:
+    case FieldType::u32:
+    case FieldType::ifd:
       hi = 0xffffffffLL;
       break;
-    case TypeId::signedLong:
+    case FieldType::i32:
       lo = std::numeric_limits<std::int32_t>::min();
       hi = std::numeric_limits<std::int32_t>::max();
       break;
-    case TypeId::undefined:
+    case FieldType::undefined:
       lo = -128;
       hi = 0xff;
       break;
@@ -133,20 +133,20 @@ void checkRange(TypeId type, std::int64_t v) {
       return;
   }
   if (v < lo || v > hi) {
-    throw Error(ErrorCode::invalidArgument, std::to_string(v) + " is out of range for " + typeName(type));
+    throw Error(ErrorCode::invalidArgument, std::to_string(v) + " is out of range for " + fieldTypeName(type));
   }
 }
 
-void checkRational(TypeId type, const Rational& r) {
-  if (type == TypeId::unsignedRational) {
+void checkRational(FieldType type, const Rational& r) {
+  if (type == FieldType::urational) {
     if (r.numerator < 0 || r.denominator < 0 || r.numerator > 0xffffffffLL || r.denominator > 0xffffffffLL) {
-      throw Error(ErrorCode::invalidArgument, "rational out of range for Rational");
+      throw Error(ErrorCode::invalidArgument, "rational out of range for RATIONAL");
     }
   } else {
     constexpr std::int64_t lo = std::numeric_limits<std::int32_t>::min();
     constexpr std::int64_t hi = std::numeric_limits<std::int32_t>::max();
     if (r.numerator < lo || r.numerator > hi || r.denominator < lo || r.denominator > hi) {
-      throw Error(ErrorCode::invalidArgument, "rational out of range for SRational");
+      throw Error(ErrorCode::invalidArgument, "rational out of range for SRATIONAL");
     }
   }
 }
@@ -182,39 +182,49 @@ Rational toRationalApprox(double v, bool isSigned) {
   return {negative ? -h1 : h1, k1};
 }
 
-std::string formatReal(double v) {
-  std::ostringstream os;
-  os.imbue(std::locale::classic());
-  os << v;
-  return os.str();
+// The shortest text that parses back to the same FLOAT or DOUBLE.
+std::string formatReal(double v, bool single) {
+  if (!std::isfinite(v)) return std::isnan(v) ? "nan" : (v < 0 ? "-inf" : "inf");
+  std::string s;
+  for (int precision = 6; precision <= (single ? 9 : 17); ++precision) {
+    std::ostringstream os;
+    os.imbue(std::locale::classic());
+    os.precision(precision);
+    os << v;
+    s = os.str();
+    const auto back = detail::parseDouble(s);
+    if (back && (single ? static_cast<float>(*back) == static_cast<float>(v) : *back == v)) break;
+  }
+  return s;
 }
 
 }  // namespace
 
-Value::Value(TypeId type) : type_(type) { storageOf(type); }
+FieldValue::FieldValue(FieldType type) : type_(type) { storageOf(type); }
 
-Value Value::ascii(std::string_view text) {
-  Value v(TypeId::asciiString);
+FieldValue FieldValue::ascii(std::string_view text) {
+  FieldValue v(FieldType::ascii);
   v.bytes_.assign(text.begin(), text.end());
   v.bytes_.push_back(0);
   return v;
 }
 
-Value Value::bytes(TypeId type, Bytes data) {
+FieldValue FieldValue::fromBytes(FieldType type, Bytes data) {
   if (storageOf(type) != Storage::bytes) {
-    throw Error(ErrorCode::invalidArgument, std::string("Value::bytes: not a byte type: ") + typeName(type));
+    throw Error(ErrorCode::invalidArgument,
+                std::string("FieldValue::fromBytes: not a byte type: ") + fieldTypeName(type));
   }
-  Value v(type);
+  FieldValue v(type);
   v.bytes_ = std::move(data);
   return v;
 }
 
-Value Value::integers(TypeId type, const std::vector<std::int64_t>& components) {
-  Value v(type);
+FieldValue FieldValue::integers(FieldType type, const std::vector<std::int64_t>& components) {
+  FieldValue v(type);
   for (auto c : components) checkRange(type, c);
   switch (storageOf(type)) {
     case Storage::bytes:
-      if (type == TypeId::asciiString) throw Error(ErrorCode::invalidArgument, "Value::integers: Ascii");
+      if (type == FieldType::ascii) throw Error(ErrorCode::invalidArgument, "FieldValue::integers: ASCII");
       for (auto c : components) v.bytes_.push_back(static_cast<std::uint8_t>(c));
       break;
     case Storage::ints:
@@ -231,33 +241,35 @@ Value Value::integers(TypeId type, const std::vector<std::int64_t>& components) 
   return v;
 }
 
-Value Value::rationals(TypeId type, const std::vector<Rational>& components) {
+FieldValue FieldValue::rationals(FieldType type, const std::vector<Rational>& components) {
   if (storageOf(type) != Storage::rationals) {
-    throw Error(ErrorCode::invalidArgument, std::string("Value::rationals: not a rational type: ") + typeName(type));
+    throw Error(ErrorCode::invalidArgument,
+                std::string("FieldValue::rationals: not a rational type: ") + fieldTypeName(type));
   }
   for (const auto& r : components) checkRational(type, r);
-  Value v(type);
+  FieldValue v(type);
   v.rationals_ = components;
   return v;
 }
 
-Value Value::reals(TypeId type, const std::vector<double>& components) {
-  Value v(type);
+FieldValue FieldValue::reals(FieldType type, const std::vector<double>& components) {
+  FieldValue v(type);
   switch (storageOf(type)) {
     case Storage::reals:
       v.reals_ = components;
       break;
     case Storage::rationals:
-      for (double c : components) v.rationals_.push_back(toRationalApprox(c, type == TypeId::signedRational));
+      for (double c : components) v.rationals_.push_back(toRationalApprox(c, type == FieldType::srational));
       break;
     default:
-      throw Error(ErrorCode::invalidArgument, std::string("Value::reals: not a real type: ") + typeName(type));
+      throw Error(ErrorCode::invalidArgument,
+                  std::string("FieldValue::reals: not a real type: ") + fieldTypeName(type));
   }
   return v;
 }
 
-Value Value::fromString(TypeId type, std::string_view text) {
-  if (type == TypeId::asciiString) return ascii(text);
+FieldValue FieldValue::parse(FieldType type, std::string_view text) {
+  if (type == FieldType::ascii) return ascii(text);
   const auto tokens = detail::splitWhitespace(text);
   switch (storageOf(type)) {
     case Storage::bytes:
@@ -268,7 +280,7 @@ Value Value::fromString(TypeId type, std::string_view text) {
         if (!n) throw Error(ErrorCode::invalidArgument, "not an integer: '" + t + "'");
         ints.push_back(*n);
       }
-      if (type == TypeId::undefined) {
+      if (type == FieldType::undefined) {
         for (auto& n : ints) {
           checkRange(type, n);
           n &= 0xff;
@@ -288,7 +300,7 @@ Value Value::fromString(TypeId type, std::string_view text) {
         } else {
           auto d = detail::parseDouble(t);
           if (!d) throw Error(ErrorCode::invalidArgument, "not a number: '" + t + "'");
-          rs.push_back(toRationalApprox(*d, type == TypeId::signedRational));
+          rs.push_back(toRationalApprox(*d, type == FieldType::srational));
         }
       }
       return rationals(type, rs);
@@ -303,51 +315,52 @@ Value Value::fromString(TypeId type, std::string_view text) {
       return reals(type, ds);
     }
   }
-  return Value(type);
+  return FieldValue(type);
 }
 
-Value Value::fromBytes(TypeId type, const std::uint8_t* data, std::size_t size, std::size_t count, ByteOrder order) {
-  const std::size_t unit = typeSize(type);
+FieldValue FieldValue::decode(FieldType type, const std::uint8_t* data, std::size_t size, std::size_t count,
+                              ByteOrder order) {
+  const std::size_t unit = fieldTypeSize(type);
   if (unit == 0 || count > size / unit) {
     throw Error(ErrorCode::corruptData, "value data shorter than its count");
   }
-  Value v(type);
+  FieldValue v(type);
   switch (type) {
-    case TypeId::unsignedByte:
-    case TypeId::asciiString:
-    case TypeId::signedByte:
-    case TypeId::undefined:
+    case FieldType::u8:
+    case FieldType::ascii:
+    case FieldType::i8:
+    case FieldType::undefined:
       v.bytes_.assign(data, data + count);
       break;
-    case TypeId::unsignedShort:
+    case FieldType::u16:
       for (std::size_t i = 0; i < count; ++i) v.ints_.push_back(detail::get16(data + 2 * i, order));
       break;
-    case TypeId::signedShort:
+    case FieldType::i16:
       for (std::size_t i = 0; i < count; ++i) {
         v.ints_.push_back(static_cast<std::int16_t>(detail::get16(data + 2 * i, order)));
       }
       break;
-    case TypeId::unsignedLong:
-    case TypeId::tiffIfd:
+    case FieldType::u32:
+    case FieldType::ifd:
       for (std::size_t i = 0; i < count; ++i) v.ints_.push_back(detail::get32(data + 4 * i, order));
       break;
-    case TypeId::signedLong:
+    case FieldType::i32:
       for (std::size_t i = 0; i < count; ++i) {
         v.ints_.push_back(static_cast<std::int32_t>(detail::get32(data + 4 * i, order)));
       }
       break;
-    case TypeId::unsignedRational:
+    case FieldType::urational:
       for (std::size_t i = 0; i < count; ++i) {
         v.rationals_.push_back({detail::get32(data + 8 * i, order), detail::get32(data + 8 * i + 4, order)});
       }
       break;
-    case TypeId::signedRational:
+    case FieldType::srational:
       for (std::size_t i = 0; i < count; ++i) {
         v.rationals_.push_back({static_cast<std::int32_t>(detail::get32(data + 8 * i, order)),
                                 static_cast<std::int32_t>(detail::get32(data + 8 * i + 4, order))});
       }
       break;
-    case TypeId::tiffFloat:
+    case FieldType::f32:
       for (std::size_t i = 0; i < count; ++i) {
         const std::uint32_t bits = detail::get32(data + 4 * i, order);
         float f;
@@ -355,7 +368,7 @@ Value Value::fromBytes(TypeId type, const std::uint8_t* data, std::size_t size, 
         v.reals_.push_back(f);
       }
       break;
-    case TypeId::tiffDouble:
+    case FieldType::f64:
       for (std::size_t i = 0; i < count; ++i) {
         const std::uint64_t bits = detail::get64(data + 8 * i, order);
         double d;
@@ -367,29 +380,29 @@ Value Value::fromBytes(TypeId type, const std::uint8_t* data, std::size_t size, 
   return v;
 }
 
-std::size_t Value::count() const noexcept {
+std::size_t FieldValue::count() const noexcept {
   switch (type_) {
-    case TypeId::unsignedByte:
-    case TypeId::asciiString:
-    case TypeId::signedByte:
-    case TypeId::undefined:
+    case FieldType::u8:
+    case FieldType::ascii:
+    case FieldType::i8:
+    case FieldType::undefined:
       return bytes_.size();
-    case TypeId::unsignedRational:
-    case TypeId::signedRational:
+    case FieldType::urational:
+    case FieldType::srational:
       return rationals_.size();
-    case TypeId::tiffFloat:
-    case TypeId::tiffDouble:
+    case FieldType::f32:
+    case FieldType::f64:
       return reals_.size();
     default:
       return ints_.size();
   }
 }
 
-std::int64_t Value::toInt64(std::size_t i) const {
+std::int64_t FieldValue::asInt(std::size_t i) const {
   if (i >= count()) throw Error(ErrorCode::invalidArgument, "value component out of range");
   switch (storageOf(type_)) {
     case Storage::bytes:
-      return type_ == TypeId::signedByte ? static_cast<std::int8_t>(bytes_[i]) : bytes_[i];
+      return type_ == FieldType::i8 ? static_cast<std::int8_t>(bytes_[i]) : bytes_[i];
     case Storage::ints:
       return ints_[i];
     case Storage::rationals: {
@@ -405,7 +418,7 @@ std::int64_t Value::toInt64(std::size_t i) const {
   return 0;
 }
 
-double Value::toDouble(std::size_t i) const {
+double FieldValue::asDouble(std::size_t i) const {
   if (i >= count()) throw Error(ErrorCode::invalidArgument, "value component out of range");
   switch (storageOf(type_)) {
     case Storage::rationals:
@@ -413,11 +426,11 @@ double Value::toDouble(std::size_t i) const {
     case Storage::reals:
       return reals_[i];
     default:
-      return static_cast<double>(toInt64(i));
+      return static_cast<double>(asInt(i));
   }
 }
 
-Rational Value::toRational(std::size_t i) const {
+Rational FieldValue::asRational(std::size_t i) const {
   if (i >= count()) throw Error(ErrorCode::invalidArgument, "value component out of range");
   switch (storageOf(type_)) {
     case Storage::rationals:
@@ -425,28 +438,28 @@ Rational Value::toRational(std::size_t i) const {
     case Storage::reals:
       return toRationalApprox(reals_[i], true);
     default:
-      return {toInt64(i), 1};
+      return {asInt(i), 1};
   }
 }
 
-std::string Value::toString(std::size_t i) const {
+std::string FieldValue::text(std::size_t i) const {
   if (i >= count()) throw Error(ErrorCode::invalidArgument, "value component out of range");
   switch (storageOf(type_)) {
     case Storage::bytes:
-      if (type_ == TypeId::asciiString) return std::string(1, static_cast<char>(bytes_[i]));
-      return std::to_string(toInt64(i));
+      if (type_ == FieldType::ascii) return std::string(1, static_cast<char>(bytes_[i]));
+      return std::to_string(asInt(i));
     case Storage::ints:
       return std::to_string(ints_[i]);
     case Storage::rationals:
       return std::to_string(rationals_[i].numerator) + "/" + std::to_string(rationals_[i].denominator);
     case Storage::reals:
-      return formatReal(reals_[i]);
+      return formatReal(reals_[i], type_ == FieldType::f32);
   }
   return {};
 }
 
-std::string Value::toString() const {
-  if (type_ == TypeId::asciiString) {
+std::string FieldValue::text() const {
+  if (type_ == FieldType::ascii) {
     std::size_t n = 0;
     while (n < bytes_.size() && bytes_[n] != 0) ++n;
     return std::string(bytes_.begin(), bytes_.begin() + static_cast<std::ptrdiff_t>(n));
@@ -455,36 +468,36 @@ std::string Value::toString() const {
   const std::size_t n = count();
   for (std::size_t i = 0; i < n; ++i) {
     if (i) out += ' ';
-    out += toString(i);
+    out += text(i);
   }
   return out;
 }
 
-Bytes Value::toBytes(ByteOrder order) const {
+Bytes FieldValue::encode(ByteOrder order) const {
   Bytes out;
   switch (type_) {
-    case TypeId::unsignedByte:
-    case TypeId::asciiString:
-    case TypeId::signedByte:
-    case TypeId::undefined:
+    case FieldType::u8:
+    case FieldType::ascii:
+    case FieldType::i8:
+    case FieldType::undefined:
       return bytes_;
-    case TypeId::unsignedShort:
-    case TypeId::signedShort:
+    case FieldType::u16:
+    case FieldType::i16:
       for (auto v : ints_) detail::append16(out, static_cast<std::uint16_t>(v), order);
       break;
-    case TypeId::unsignedLong:
-    case TypeId::signedLong:
-    case TypeId::tiffIfd:
+    case FieldType::u32:
+    case FieldType::i32:
+    case FieldType::ifd:
       for (auto v : ints_) detail::append32(out, static_cast<std::uint32_t>(v), order);
       break;
-    case TypeId::unsignedRational:
-    case TypeId::signedRational:
+    case FieldType::urational:
+    case FieldType::srational:
       for (const auto& r : rationals_) {
         detail::append32(out, static_cast<std::uint32_t>(r.numerator), order);
         detail::append32(out, static_cast<std::uint32_t>(r.denominator), order);
       }
       break;
-    case TypeId::tiffFloat:
+    case FieldType::f32:
       for (double d : reals_) {
         const float f = static_cast<float>(d);
         std::uint32_t bits;
@@ -492,13 +505,13 @@ Bytes Value::toBytes(ByteOrder order) const {
         detail::append32(out, bits, order);
       }
       break;
-    case TypeId::tiffDouble:
+    case FieldType::f64:
       for (double d : reals_) {
         std::uint64_t bits;
         std::memcpy(&bits, &d, 8);
         const auto hi = static_cast<std::uint32_t>(bits >> 32);
         const auto lo = static_cast<std::uint32_t>(bits);
-        if (order == ByteOrder::littleEndian) {
+        if (order == ByteOrder::little) {
           detail::append32(out, lo, order);
           detail::append32(out, hi, order);
         } else {
@@ -511,9 +524,9 @@ Bytes Value::toBytes(ByteOrder order) const {
   return out;
 }
 
-bool operator==(const Value& a, const Value& b) noexcept {
+bool operator==(const FieldValue& a, const FieldValue& b) noexcept {
   return a.type_ == b.type_ && a.bytes_ == b.bytes_ && a.ints_ == b.ints_ && a.rationals_ == b.rationals_ &&
          a.reals_ == b.reals_;
 }
 
-}  // namespace photos
+}  // namespace lumenlib

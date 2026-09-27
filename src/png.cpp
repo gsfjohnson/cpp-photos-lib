@@ -4,7 +4,7 @@
 //
 // Writing replaces those chunks with eXIf, iTXt and (for IPTC) a raw profile
 // right after IHDR, and copies every other chunk unchanged.
-#include <photos/error.hpp>
+#include <lumenlib/error.hpp>
 
 #include "bytes.hpp"
 #include "exif_internal.hpp"
@@ -16,7 +16,7 @@
 #include <array>
 #include <cstring>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 constexpr std::string_view kSignature("\x89PNG\r\n\x1a\n", 8);
@@ -164,13 +164,12 @@ bool isRawProfile(const std::string& keyword, std::string_view type) {
   return keyword == "Raw profile type " + std::string(type);
 }
 
-class PngImage final : public Image {
+class PngFile final : public ImageFile {
  public:
-  explicit PngImage(std::unique_ptr<InputSource> source)
-      : Image(ImageType::png, std::move(source), kExif | kIptc | kXmp | kIcc, kExif | kIptc | kXmp) {}
+  explicit PngFile(std::unique_ptr<InputSource> source) : ImageFile(FileFormat::png, std::move(source)) {}
 
  protected:
-  void doReadMetadata() override {
+  void doLoad() override {
     const InputSource& src = source();
     bool haveExif = false, haveXmp = false, haveIptc = false;
     for (const auto& c : scan(src)) {
@@ -207,12 +206,13 @@ class PngImage final : public Image {
     }
   }
 
-  void doWriteMetadata(OutputSink& sink) const override {
+  void doSave(OutputSink& sink) const override {
     const InputSource& src = source();
     const auto chunks = scan(src);
     Bytes out(kSignature.begin(), kSignature.end());
     for (const auto& c : chunks) {
       if (c.type == "eXIf") continue;
+      if (c.type == "iCCP" && iccChanged_) continue;
       if (c.type == "tEXt" || c.type == "zTXt" || c.type == "iTXt") {
         // Only the keyword is needed to decide.
         const Bytes head = src.readBytes(c.data(), std::min<std::uint32_t>(c.length, 80));
@@ -254,7 +254,7 @@ class PngImage final : public Image {
         }
         return false;
       }
-      iptc_ = IptcData::decode(raw.data(), raw.size());
+      iptc_ = IptcMetadata::decode(raw.data(), raw.size());
       return true;
     } catch (const Error&) {
       iptc_.clear();
@@ -263,6 +263,18 @@ class PngImage final : public Image {
   }
 
   void writeMetadataChunks(Bytes& out) const {
+    // A new ICC profile: iCCP must come before PLTE and IDAT, as this does.
+    if (iccChanged_ && !icc_.empty()) {
+      const std::string name = "ICC profile";
+      Bytes d(name.begin(), name.end());
+      d.push_back(0);
+      d.push_back(0);  // deflate
+      const auto z = zlibDeflate(icc_.data(), icc_.size());
+      if (!z) throw Error(ErrorCode::unsupportedOperation, "cannot compress the ICC profile");
+      append(d, *z);
+      writeChunk(out, "iCCP", d);
+    }
+
     const Bytes tiff = encodeExif(exif_);
     if (!tiff.empty()) writeChunk(out, "eXIf", tiff);
 
@@ -296,8 +308,8 @@ class PngImage final : public Image {
 
 }  // namespace
 
-std::unique_ptr<Image> newPngImage(std::unique_ptr<InputSource> source) {
-  return std::make_unique<PngImage>(std::move(source));
+std::unique_ptr<ImageFile> newPngFile(std::unique_ptr<InputSource> source) {
+  return std::make_unique<PngFile>(std::move(source));
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

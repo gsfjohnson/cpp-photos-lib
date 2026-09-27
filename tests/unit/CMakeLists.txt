@@ -1,4 +1,4 @@
-add_executable(photos_tests
+add_executable(lumenlib_tests
   main.cpp
   test_value.cpp
   test_exif.cpp
@@ -6,10 +6,12 @@ add_executable(photos_tests
   test_xmp.cpp
   test_formats.cpp
   test_photo_info.cpp
+  test_makernote.cpp
+  test_samples.cpp
   test_robustness.cpp)
-target_link_libraries(photos_tests PRIVATE photos::photos)
-target_compile_definitions(photos_tests PRIVATE PHOTOS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")
+target_link_libraries(lumenlib_tests PRIVATE lumenlib::lumenlib)
+target_compile_definitions(lumenlib_tests PRIVATE LUMENLIB_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")
 if(MSVC)
-  target_compile_options(photos_tests PRIVATE /utf-8)
+  target_compile_options(lumenlib_tests PRIVATE /utf-8)
 endif()
-add_test(NAME photos_tests COMMAND photos_tests)
+add_test(NAME lumenlib_tests COMMAND lumenlib_tests)

@@ -9,7 +9,7 @@
 //                    uuid box.
 //   JPEG XL          "Exif" and "xml " boxes. Brotli-compressed ("brob")
 //                    boxes are skipped.
-#include <photos/error.hpp>
+#include <lumenlib/error.hpp>
 
 #include "bytes.hpp"
 #include "exif_internal.hpp"
@@ -19,7 +19,7 @@
 #include <cstring>
 #include <map>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 constexpr std::size_t kMaxBoxes = 100000;
@@ -120,12 +120,12 @@ struct Property {
   unsigned rotation;  // quarter turns
 };
 
-class BmffImage final : public Image {
+class BmffFile final : public ImageFile {
  public:
-  BmffImage(ImageType type, std::unique_ptr<InputSource> source) : Image(type, std::move(source), kExif | kXmp, 0) {}
+  BmffFile(FileFormat format, std::unique_ptr<InputSource> source) : ImageFile(format, std::move(source)) {}
 
  protected:
-  void doReadMetadata() override {
+  void doLoad() override {
     const InputSource& src = source();
     std::size_t budget = kMaxBoxes;
     std::uint64_t begin = 0;
@@ -352,14 +352,17 @@ class BmffImage final : public Image {
     for (const auto& b : boxes(src, moov.payload, moov.end, budget)) {
       if (b.type != "uuid" || std::memcmp(b.uuid, kCanonUuid, 16) != 0) continue;
       for (const auto& c : boxes(src, b.payload, b.end, budget)) {
-        IfdId root;
+        Ifd root;
         if (c.type == "CMT1")
-          root = IfdId::ifd0;
+          root = Ifd::ifd0;
         else if (c.type == "CMT2")
-          root = IfdId::exif;
+          root = Ifd::exif;
         else if (c.type == "CMT4")
-          root = IfdId::gps;
-        else
+          root = Ifd::gps;
+        else if (c.type == "CMT3") {
+          readCanonMakerNote(c);
+          continue;
+        } else
           continue;
         const Bytes d = src.readBytes(c.payload, checkedSize(c));
         TiffDecodeOptions options;
@@ -367,18 +370,29 @@ class BmffImage final : public Image {
         options.keepOrigin = false;
         try {
           decodeTiff(d.data(), d.size(), exif_, options);
-        } catch (const Error&) {
+        } catch (const Error& e) {
           // A damaged block loses its own tags only.
+          warn("CR3 " + c.type + " not read: " + e.what());
         }
       }
     }
+  }
+
+  // CMT3 is Canon's maker note as a TIFF structure of its own.
+  void readCanonMakerNote(const Box& box) {
+    const Bytes d = source().readBytes(box.payload, checkedSize(box));
+    if (!isTiffHeader(d.data(), d.size())) return;
+    const ByteOrder order = d[0] == 'I' ? ByteOrder::little : ByteOrder::big;
+    const MakerNoteLayout layout{MakerNoteFormat::canon, order, get32(d.data() + 4, order), MakerNoteBase::own, 0};
+    if (layout.ifd >= d.size()) return;
+    ExifAccess::makerNote(exif_) = decodeMakerNote(SpanSource(d.data(), d.size()), 0, d.size(), layout);
   }
 };
 
 }  // namespace
 
-std::unique_ptr<Image> newBmffImage(ImageType type, std::unique_ptr<InputSource> source) {
-  return std::make_unique<BmffImage>(type, std::move(source));
+std::unique_ptr<ImageFile> newBmffFile(FileFormat format, std::unique_ptr<InputSource> source) {
+  return std::make_unique<BmffFile>(format, std::move(source));
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail

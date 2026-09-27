@@ -4,7 +4,7 @@
 
 #include <map>
 
-namespace photos::detail {
+namespace lumenlib::detail {
 namespace {
 
 constexpr int kMaxDepth = 256;
@@ -321,4 +321,4 @@ std::string escapeXml(std::string_view text) {
   return out;
 }
 
-}  // namespace photos::detail
+}  // namespace lumenlib::detail
