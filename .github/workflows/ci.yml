@@ -120,8 +120,12 @@ jobs:
       - run: >
           cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DLUMENLIB_BUILD_FUZZERS=ON -DLUMENLIB_BUILD_TESTS=OFF -DLUMENLIB_BUILD_TOOLS=OFF
-      - run: cmake --build build --target fuzz_image --parallel
+      - run: cmake --build build --target fuzz_image fuzz_movie --parallel
       - name: Fuzz for two minutes from the test images
         run: |
           mkdir corpus && cp tests/data/*.{jpg,mpo,png,webp,tif,avif,heic,xmp} corpus/
           build/fuzz/fuzz_image -max_total_time=120 -rss_limit_mb=2048 corpus
+      - name: Fuzz for two minutes from the test movies
+        run: |
+          mkdir movies && cp tests/data/*.{mov,mp4} movies/
+          build/fuzz/fuzz_movie -max_total_time=120 -rss_limit_mb=2048 movies

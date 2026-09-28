@@ -1,6 +1,7 @@
 # lumenlib
 
 A C++17 library for reading and writing photo metadata (Exif, IPTC and XMP),
+and for reading what an MP4 or QuickTime movie says about itself,
 built for the Lumen photo album app, which ships on Windows, macOS, Linux,
 iOS and Android. It is [MIT](LICENSE)-licensed and written from the file
 format specifications, so an application can link it without taking on
@@ -25,8 +26,8 @@ copyleft terms.
   corrected, so it stays readable.
 - **Safe on untrusted files.** Every read is bounds-checked. IFD loops and
   nesting depth are limited, and XML entities are never expanded. The test
-  suite truncates and mutates every test image under AddressSanitizer, and a
-  libFuzzer target covers every reader and writer.
+  suite truncates and mutates every test image and movie under
+  AddressSanitizer, and libFuzzer targets cover every reader and writer.
 - **Careful writing.** Only the metadata is rewritten; the image data is
   copied byte for byte. Unchanged Exif, or Exif whose edited values still fit
   where the old ones were, is written back in place. Multi-picture (MPF)
@@ -54,6 +55,7 @@ onto this library.
 | Canon CR3 | Exif, XMP, maker note | not yet |
 | JPEG XL (container) | Exif, XMP | not yet |
 | XMP sidecar (`.xmp`) | XMP | XMP |
+| MP4, QuickTime (MOV, M4V, 3GP) | the movie: times, length, tracks, tags ([below](#movies)) | not yet |
 
 For the read-only formats, write edits to an XMP sidecar (Lightroom and
 darktable do the same), or, for a HEIF being encoded, pass
@@ -121,6 +123,25 @@ An `ImageFile` is not thread-safe; use one per thread. Nothing needs setting
 up first, and the XMP namespace registry and the warning handler are
 thread-safe.
 
+### Movies
+
+`readMovie()` reads what an MP4 or QuickTime movie says about itself, from
+its `moov` box alone; no sample is read or decoded, so no codec is involved:
+
+```cpp
+lumenlib::MovieInfo movie = lumenlib::readMovie("IMG_0002.MOV");  // or an InputSource
+if (movie.created) std::cout << lumenlib::movieTimeToUnix(*movie.created) << "\n";  // mvhd, UTC
+if (const auto* video = movie.firstTrack("vide")) {
+  // "hvc1", 1920x1080 as stored, pixel aspect par_h:par_v, tkhd's matrix, 1000 / min_sample_ms fps
+}
+if (const auto* where = movie.item("com.apple.quicktime.location.ISO6709")) std::cout << *where << "\n";
+```
+
+The items are the QuickTime keys at `moov/meta` (Apple's) and
+`moov/udta/meta` (FFmpeg's `use_metadata_tags`), iTunes-style items, and
+`udta`'s own (`©xyz`, `©day`), as text, each with its `MovieItemKind`. [docs/video.md](docs/video.md) has
+the boxes read, and the trimmed copies still to come.
+
 ### Keys
 
 | Family | Key | Examples |
@@ -160,7 +181,7 @@ ctest --test-dir build
 | `LUMENLIB_WITH_ZLIB` | `AUTO` | `ON`, `OFF` or `AUTO` (use zlib when found) |
 | `LUMENLIB_BUILD_TESTS` | on when top level | the unit tests |
 | `LUMENLIB_BUILD_TOOLS` | on when top level | `lumen-meta` |
-| `LUMENLIB_BUILD_FUZZERS` | `OFF` | the libFuzzer target (Clang) |
+| `LUMENLIB_BUILD_FUZZERS` | `OFF` | the libFuzzer targets (Clang) |
 | `LUMENLIB_INSTALL` | on when top level | the install rules and CMake package |
 | `LUMENLIB_WARNINGS_AS_ERRORS` | `OFF` | |
 | `BUILD_SHARED_LIBS` | `OFF` | only the public API is exported |
@@ -189,7 +210,8 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 - compares the output with an independent reader's, exiv2's;
 - cross-compiles for iOS (device and both Simulator architectures) and for
   Android (arm64-v8a, armeabi-v7a, x86_64);
-- fuzzes for two minutes.
+- fuzzes the image readers and writers for two minutes, and the movie
+  reader for two more.
 
 ## Releases
 
@@ -230,7 +252,8 @@ build paths before it is packaged.
   exiv2 is only run as a program; nothing here links it. The only
   differences it allows are listed in the script, and are by design.
 - `tests/data/generate.py` regenerates the test images with Pillow,
-  pillow-heif and exiftool.
+  pillow-heif and exiftool; `tests/data/make_movies.py` the test movies, box
+  by box, with Python alone.
 - `tests/find_package` builds against an installed package.
 
 ## Not yet done
@@ -250,4 +273,5 @@ What a photo album might still want, roughly in order:
   into the XMP data;
 - JPEG XL's Brotli-compressed boxes;
 - XMP qualifiers other than `xml:lang`;
-- video formats.
+- trimmed copies of MP4 and QuickTime movies ([docs/video.md](docs/video.md));
+  Matroska and WebM.

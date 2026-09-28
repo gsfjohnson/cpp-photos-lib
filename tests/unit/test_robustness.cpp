@@ -71,3 +71,61 @@ TEST(robustness_mutation) {
   }
   CHECK(true);
 }
+
+namespace {
+
+const char* const kMovies[] = {"iphone.mov",   "android.mp4",    "ffmpeg.mp4",
+                               "mirrored.mp4", "anamorphic.mov", "fragmented.mp4"};
+
+// Reads the movie. Only lumenlib::Error may escape.
+void exerciseMovie(const Bytes& data) {
+  try {
+    const MemorySource source(data);
+    const MovieInfo info = readMovie(source);
+    (void)info.firstTrack("vide");
+    (void)info.item("com.apple.quicktime.make");
+  } catch (const Error&) {
+  }
+}
+
+}  // namespace
+
+TEST(robustness_movie_truncation) {
+  for (const char* name : kMovies) {
+    const Bytes original = testing::readData(name);
+    for (std::size_t n = 0; n < original.size(); ++n) {
+      exerciseMovie(Bytes(original.begin(), original.begin() + static_cast<std::ptrdiff_t>(n)));
+    }
+  }
+  CHECK(true);
+}
+
+TEST(robustness_movie_mutation) {
+  std::mt19937 rng(61);
+  for (const char* name : kMovies) {
+    const Bytes original = testing::readData(name);
+    for (int round = 0; round < 2000; ++round) {
+      Bytes data = original;
+      const int edits = 1 + static_cast<int>(rng() % 6);
+      for (int e = 0; e < edits; ++e) {
+        const std::size_t at = rng() % data.size();
+        switch (rng() % 4) {
+          case 0:
+            data[at] = static_cast<std::uint8_t>(rng());
+            break;
+          case 1:
+            data[at] ^= static_cast<std::uint8_t>(1u << (rng() % 8));
+            break;
+          case 2:
+            data[at] = 0xff;
+            break;
+          default:
+            data[at] = 0;
+            break;
+        }
+      }
+      exerciseMovie(data);
+    }
+  }
+  CHECK(true);
+}

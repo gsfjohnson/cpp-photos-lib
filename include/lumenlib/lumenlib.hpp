@@ -9,6 +9,7 @@
 #include <lumenlib/io.hpp>
 #include <lumenlib/iptc.hpp>
 #include <lumenlib/makernote.hpp>
+#include <lumenlib/movie.hpp>
 #include <lumenlib/photo_info.hpp>
 #include <lumenlib/types.hpp>
 #include <lumenlib/version.hpp>
