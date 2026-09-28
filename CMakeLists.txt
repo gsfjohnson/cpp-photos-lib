@@ -12,7 +12,9 @@
 # or add_subdirectory() this tree and link lumenlib::lumenlib.
 cmake_minimum_required(VERSION 3.16)
 
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/LIBRARY_VERSION" _lumenlib_version)
+# VERSION is the repository's one version: this library's, and that of the
+# release packages built from it (lumenlib and lumen-ios-deps alike).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" _lumenlib_version)
 string(STRIP "${_lumenlib_version}" _lumenlib_version)
 project(lumenlib VERSION ${_lumenlib_version} LANGUAGES CXX)
 

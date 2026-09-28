@@ -1,7 +1,21 @@
 name: Release
 
-# Publishing a GitHub release (tag vX.Y.Z, matching VERSION) builds every iOS
-# slice and attaches the packages to it, with a SHA256SUMS file:
+# Publishing a GitHub release (tag vX.Y.Z, matching VERSION) builds every
+# package and attaches them to it, with a SHA256SUMS file. VERSION is the
+# repository's one version, so every package carries it.
+#
+# lumenlib alone, for the desktop:
+#   lumenlib-X.Y.Z-windows-x86_64-clang64.zip
+#   lumenlib-X.Y.Z-linux-x86_64.tar.gz
+#   lumenlib-X.Y.Z-macos-arm64.tar.gz
+#   lumenlib-X.Y.Z-macos-x86_64.tar.gz
+# Each is a `cmake --install` tree, static and built with zlib, that a
+# consumer points CMAKE_PREFIX_PATH at and then find_package(lumenlib)s (which
+# re-finds zlib). The toolchains are Lumen's, as with redwain's packages:
+# MSYS2 CLANG64 on Windows, Clang on Linux, macOS 12 as the oldest macOS.
+#
+# Every iOS library Lumen links that redwain's packages do not carry,
+# lumenlib included:
 #   lumen-ios-deps-X.Y.Z-arm64.tar.gz
 #   lumen-ios-deps-X.Y.Z-sim-arm64.tar.gz
 #   lumen-ios-deps-X.Y.Z-sim-x86_64.tar.gz
@@ -21,8 +35,148 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: build (${{ matrix.slice }})
+  lumenlib:
+    name: lumenlib (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # MSYS2 CLANG64 (clang + libc++), the toolchain Lumen builds with on
+          # Windows. Not link-compatible with MSVC or MINGW64 (libstdc++).
+          - name: windows-x86_64-clang64
+            os: windows-latest
+            shell: msys2 {0}
+            archive: zip
+          # Pinned rather than ubuntu-latest: a static library links on this
+          # glibc and newer, so the runner must not move ahead of Lumen's.
+          - name: linux-x86_64
+            os: ubuntu-26.04
+            shell: bash
+            archive: tar.gz
+          # One package per architecture, as Lumen builds per architecture and
+          # lipos afterwards. Built for macOS 12, Lumen's oldest: left to the
+          # runner, the objects ask for its own macOS and a consumer's link
+          # warns.
+          - name: macos-arm64
+            os: macos-latest
+            shell: bash
+            archive: tar.gz
+            arch: arm64
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          - name: macos-x86_64
+            os: macos-15-intel
+            shell: bash
+            archive: tar.gz
+            arch: x86_64
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-zlib
+            zip
+
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libstdc++-15-dev zlib1g-dev
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+
+      - if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - name: Version
+        id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+            if [ "${tag#v}" != "$version" ]; then
+              echo "::error::Release tag $tag does not match VERSION $version"
+              exit 1
+            fi
+          fi
+          echo "package=lumenlib-$version-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      # zlib ON, not AUTO: every package reads compressed PNG chunks and ICC
+      # profiles alike. No lumen-meta: the package is the library.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DLUMENLIB_WITH_ZLIB=ON -DLUMENLIB_BUILD_TOOLS=OFF ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install
+        run: cmake --install build --prefix "stage/${{ steps.version.outputs.package }}"
+
+      # Builds tests/find_package against the installed tree as a consumer
+      # would, and reads a photo with it.
+      - name: Smoke test
+        run: |
+          cmake -S tests/find_package -B build-consumer -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_PREFIX_PATH=$PWD/stage/${{ steps.version.outputs.package }}" ${{ matrix.cmake_args }}
+          cmake --build build-consumer
+          build-consumer/find_package_consumer tests/data/photo.jpg
+
+      # Nothing may name the build machine: every package file is relative.
+      # MSYS2 spells the checkout both /d/a/... and D:/a/....
+      - name: Check relocatable
+        run: |
+          prefix="stage/${{ steps.version.outputs.package }}"
+          native=$PWD
+          if [ "$RUNNER_OS" = Windows ]; then native=$(cygpath -m "$PWD"); fi
+          if grep -rlI -e "$PWD" -e "$native" "$prefix/lib/cmake" "$prefix/include"; then
+            echo "::error::the files above hold absolute build paths"
+            exit 1
+          fi
+
+      - if: runner.os == 'macOS'
+        name: Check archives
+        run: |
+          for lib in stage/*/lib/*.a; do
+            archs=$(lipo -archs "$lib")
+            echo "$lib: $archs"
+            [ "$archs" = "${{ matrix.arch }}" ] || exit 1
+          done
+
+      - name: Package
+        run: |
+          pkg="${{ steps.version.outputs.package }}"
+          cp README.md "stage/$pkg/"
+          cd stage
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -qr "../$pkg.zip" "$pkg"
+          else
+            tar -czf "../$pkg.tar.gz" "$pkg"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.package }}
+          path: ${{ steps.version.outputs.package }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  ios-deps:
+    name: lumen-ios-deps (${{ matrix.slice }})
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -65,7 +219,7 @@ jobs:
 
   publish:
     if: ${{ github.event_name == 'release' }}
-    needs: build
+    needs: [lumenlib, ios-deps]
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/download-artifact@v8
@@ -78,7 +232,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd dist
-          sha256sum lumen-ios-deps-* > SHA256SUMS
+          sha256sum lumenlib-* lumen-ios-deps-* > SHA256SUMS
           cat SHA256SUMS
-          gh release upload "${{ github.event.release.tag_name }}" lumen-ios-deps-* SHA256SUMS \
+          gh release upload "${{ github.event.release.tag_name }}" lumenlib-* lumen-ios-deps-* SHA256SUMS \
             --clobber --repo "${{ github.repository }}"

@@ -3,6 +3,8 @@
 # redwain's iOS packages do not carry. Each slice is one install tree and one
 # tarball, lumen-ios-deps-<version>-<slice>.tar.gz, holding
 #
+#   lumenlib   static, this repository's library (VERSION is its version and
+#              the package's), with the SDK's zlib
 #   exiv2      static, with expat for XMP and the SDK's zlib for PNG
 #   libwebp    static: libwebp, libsharpyuv, libwebpdecoder, libwebpdemux,
 #              libwebpmux
@@ -175,6 +177,13 @@ build_slice() {
   cmake --build "$work/libwebp" --parallel "$jobs"
   cmake --install "$work/libwebp"
 
+  log "[$slice] lumenlib $VERSION"
+  cmake -S "$ROOT" -B "$work/lumenlib" "${ios[@]}" \
+    -DLUMENLIB_WITH_ZLIB=ON -DLUMENLIB_BUILD_TESTS=OFF -DLUMENLIB_BUILD_TOOLS=OFF \
+    -DLUMENLIB_WARNINGS_AS_ERRORS=ON
+  cmake --build "$work/lumenlib" --parallel "$jobs"
+  cmake --install "$work/lumenlib"
+
   log "[$slice] ONNX Runtime $ORT_VERSION ($ort_slice, $arch)"
   local ort="$BUILD/src/onnxruntime-c-$ORT_VERSION"
   local ort_bin="$ort/onnxruntime.xcframework/$ort_slice/onnxruntime.framework/onnxruntime"
@@ -197,6 +206,7 @@ build_slice() {
     echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ) with $(xcodebuild -version | tr '\n' ' ')"
     echo "commit $(git -C "$ROOT" rev-parse --short HEAD 2> /dev/null || echo unknown)"
     echo
+    echo "lumenlib  $VERSION  this repository, at the commit above"
     local name version url sum
     for name in $SOURCES; do
       version="${name}_VERSION" url="${name}_URL" sum="${name}_SHA256"
@@ -251,8 +261,9 @@ check_slice() {
     "-Dexiv2_DIR=$prefix/lib/cmake/exiv2" \
     "-DWebP_DIR=$prefix/share/WebP/cmake" \
     "-Donnxruntime_DIR=$prefix/lib/cmake/onnxruntime" \
+    "-Dlumenlib_DIR=$prefix/lib/cmake/lumenlib" \
     "-DEXPECT_EXIV2_VERSION=$EXIV2_VERSION" "-DEXPECT_WEBP_VERSION=$WEBP_VERSION" \
-    "-DEXPECT_ORT_VERSION=$ORT_VERSION"
+    "-DEXPECT_ORT_VERSION=$ORT_VERSION" "-DEXPECT_LUMENLIB_VERSION=$VERSION"
   # A library built for a newer iOS than the deployment target only warns at
   # link time; here it fails.
   local out="$consumer/link.log"
@@ -268,7 +279,7 @@ check_slice() {
 
 # ---- Main ---------------------------------------------------------------------
 
-[ $# -gt 0 ] || { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[ $# -gt 0 ] || { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 if [ "$1" = fetch ]; then
   fetch

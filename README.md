@@ -34,9 +34,11 @@ copyleft terms.
   metadata is overwritten, not just unlinked. A file is replaced only after
   its new version has been written in full.
 
-This repository also builds the iOS dependency packages the app links today;
-see [docs/ios-deps.md](docs/ios-deps.md). [docs/migrating.md](docs/migrating.md)
-maps the app's current exiv2 calls onto this library.
+Each release carries the library prebuilt for Windows, macOS and Linux, and
+the iOS dependency packages the app links, lumenlib among them
+([Releases](#releases), [docs/ios-deps.md](docs/ios-deps.md)).
+[docs/migrating.md](docs/migrating.md) maps the app's current exiv2 calls
+onto this library.
 
 ## Formats
 
@@ -188,6 +190,27 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 - cross-compiles for iOS (device and both Simulator architectures) and for
   Android (arm64-v8a, armeabi-v7a, x86_64);
 - fuzzes for two minutes.
+
+## Releases
+
+`VERSION` is the repository's one version: the library's (`project()` reads
+it) and every release package's. Publishing a GitHub release tagged `vX.Y.Z`,
+matching it, runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which attaches these with a `SHA256SUMS` file:
+
+| Package | Holds | Built with |
+| --- | --- | --- |
+| `lumenlib-X.Y.Z-windows-x86_64-clang64.zip` | lumenlib | MSYS2 CLANG64 (clang, libc++) |
+| `lumenlib-X.Y.Z-linux-x86_64.tar.gz` | lumenlib | Clang on Ubuntu 26.04 |
+| `lumenlib-X.Y.Z-macos-arm64.tar.gz`, `-macos-x86_64.tar.gz` | lumenlib | Xcode, for macOS 12 and later |
+| `lumen-ios-deps-X.Y.Z-{arm64,sim-arm64,sim-x86_64}.tar.gz` | lumenlib, with the other iOS libraries Lumen links | [docs/ios-deps.md](docs/ios-deps.md) |
+
+The lumenlib packages are `cmake --install` trees of the static library,
+built with zlib: point `CMAKE_PREFIX_PATH` at one and
+`find_package(lumenlib CONFIG REQUIRED)`, which finds zlib too. The Windows
+package links only with MSYS2 CLANG64, not MSVC or MINGW64. Each is tested,
+installed, built against by `tests/find_package`, and checked for absolute
+build paths before it is packaged.
 
 ## Tests
 

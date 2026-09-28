@@ -1,10 +1,12 @@
 // Links every library in a lumen-ios-deps slice the way Lumen uses it: exiv2
 // XMP and a PNG in memory, a WebP encode (with sharp YUV) that is demuxed and
-// muxed back, and an ONNX Runtime session with the Core ML provider. Run on a
-// device or simulator it prints each library's version and what it did; the
-// build only links it.
+// muxed back, an ONNX Runtime session with the Core ML provider, and lumenlib
+// adding XMP and an ICC profile (deflated with zlib) to a PNG in memory. Run
+// on a device or simulator it prints each library's version and what it did;
+// the build only links it.
 #include <coreml_provider_factory.h>
 #include <exiv2/exiv2.hpp>
+#include <lumenlib/lumenlib.hpp>
 #include <onnxruntime_cxx_api.h>
 #include <webp/decode.h>
 #include <webp/demux.h>
@@ -105,10 +107,35 @@ bool onnxRound() {
   return true;
 }
 
+bool lumenlibRound() {
+  // A 1x1 RGBA PNG.
+  const lumenlib::Bytes png{
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+      0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+      0x42, 0x60, 0x82};
+  try {
+    auto file = lumenlib::ImageFile::open(png);
+    file->load();
+    file->xmp().setItems("dc:subject", {"lumen"});
+    file->setIccProfile(lumenlib::Bytes(512, 0x2a));  // an iCCP chunk: deflate
+    file->save();
+    auto again = lumenlib::ImageFile::open(*file->buffer());
+    again->load();  // inflate
+    std::printf("lumenlib %s: %zu-byte PNG with XMP and a %zu-byte ICC profile\n", LUMENLIB_VERSION_STRING,
+                file->buffer()->size(), again->iccProfile().size());
+    return again->xmp().text("dc:subject") == "lumen" && again->iccProfile().size() == 512;
+  } catch (const lumenlib::Error& e) {
+    std::printf("lumenlib: %s\n", e.what());
+    return false;
+  }
+}
+
 }  // namespace
 
 int main() {
-  const bool ok = exiv2Round() & webpRound() & onnxRound();
+  const bool ok = exiv2Round() & webpRound() & onnxRound() & lumenlibRound();
   std::printf("%s\n", ok ? "ok" : "FAILED");
   return ok ? 0 : 1;
 }

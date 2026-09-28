@@ -11,12 +11,14 @@ configure is pointed at (`pm/ADD_IOS.md` §3 in Lumen).
 
 | Library | Version | Built as | Licence |
 | --- | --- | --- | --- |
+| lumenlib | this package's (`VERSION`) | static, from this repository | MIT |
 | exiv2 | 0.28.9 | static, from source | GPL-2.0-or-later |
 | expat (exiv2's XMP parser) | 2.8.5 | static, from source | MIT |
 | libwebp (with sharpyuv, demux, mux, decoder) | 1.6.0 | static, from source | BSD-3-Clause (+ PATENTS) |
 | ONNX Runtime | 1.30.0 | Microsoft's prebuilt, the `onnxruntime-c` pod's xcframework | MIT |
 
-zlib (exiv2's PNG support) and iconv come from the iOS SDK.
+zlib (exiv2's PNG support, lumenlib's compressed PNG chunks and ICC profiles)
+and iconv come from the iOS SDK.
 
 ## Packages
 
@@ -29,12 +31,12 @@ zlib (exiv2's PNG support) and iconv come from the iOS SDK.
 Each is one install tree:
 
 ```
-lib/                  libexiv2.a libexpat.a libwebp.a libsharpyuv.a libwebpdecoder.a
-                      libwebpdemux.a libwebpmux.a libonnxruntime.a
-lib/cmake/            exiv2/ expat-X.Y.Z/ onnxruntime/
+lib/                  liblumenlib.a libexiv2.a libexpat.a libwebp.a libsharpyuv.a
+                      libwebpdecoder.a libwebpdemux.a libwebpmux.a libonnxruntime.a
+lib/cmake/            lumenlib/ exiv2/ expat-X.Y.Z/ onnxruntime/
 lib/pkgconfig/        exiv2.pc expat.pc libwebp.pc libsharpyuv.pc ... (relocatable)
 share/WebP/cmake/     WebPConfig.cmake
-include/              exiv2/ webp/ expat.h expat_config.h expat_external.h
+include/              lumenlib/ exiv2/ webp/ expat.h expat_config.h expat_external.h
 include/onnxruntime/  onnxruntime_c_api.h onnxruntime_cxx_api.h coreml_provider_factory.h ...
 share/licenses/       each library's licence
 VERSIONS              the pinned sources, their SHA-256 and the Xcode that built them
@@ -61,10 +63,12 @@ cmake -B build-ios-arm64 -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
   -Dredwain_DIR=$redwain/lib/cmake/redwain \
   -Dexiv2_DIR=$deps/lib/cmake/exiv2 \
   -DWebP_DIR=$deps/share/WebP/cmake \
-  -Donnxruntime_DIR=$deps/lib/cmake/onnxruntime
+  -Donnxruntime_DIR=$deps/lib/cmake/onnxruntime \
+  -Dlumenlib_DIR=$deps/lib/cmake/lumenlib
 ```
 
 ```cmake
+find_package(lumenlib CONFIG REQUIRED)     # lumenlib::lumenlib (finds ZLIB itself)
 find_package(exiv2 CONFIG REQUIRED)        # Exiv2::exiv2lib (finds EXPAT, ZLIB, Iconv itself)
 find_package(WebP CONFIG REQUIRED)         # WebP::webp, WebP::sharpyuv, WebP::webpdemux, ...
 find_package(onnxruntime CONFIG REQUIRED)  # onnxruntime::onnxruntime
@@ -96,16 +100,17 @@ with Xcode and cmake to build; fetching needs only curl and the internet.
 ./build.sh all                   # or: ./build.sh arm64 sim-arm64 sim-x86_64
 ```
 
-For each slice it builds expat, exiv2 and libwebp, takes ONNX Runtime's slice
-from the xcframework, writes the licences and `VERSIONS`, and then checks the
-result:
+For each slice it builds expat, exiv2, libwebp and lumenlib (this repository's
+own tree), takes ONNX Runtime's slice from the xcframework, writes the
+licences and `VERSIONS`, and then checks the result:
 
 - every archive is a static library of this slice's one architecture;
 - no package file (CMake, pkg-config, headers) names the build machine;
 - `tests/consumer` configures against the prefix the way Lumen does, finds the
   versions pinned, and links a program that uses each library (XMP through
   expat, a PNG through zlib, a WebP encode with sharp YUV, an ONNX Runtime
-  session with Core ML);
+  session with Core ML, and lumenlib adding XMP and a deflated ICC profile to
+  a PNG);
 - no library needs a newer iOS than 16.0, and the program is linked for the
   slice's platform (`vtool`).
 
@@ -121,15 +126,17 @@ On a Mac without the internet, run `./build.sh fetch` elsewhere and copy
 ## Updating a library
 
 Change its version, URL, file name and hash in `build.sh`, the table above,
-and `VERSION` (a new minor for a library upgrade, a new patch for a rebuild),
-then build every slice. Lumen pins this package's version in two places
-(`release.yml` and `cmake/Dependencies.cmake`'s iOS branch), so a bump there is
-a one-line change once the release is out.
+and `VERSION`, then build every slice. `VERSION` is the repository's one
+version, lumenlib's too: a new minor for a library upgrade or a change to
+lumenlib's API, a new patch for a rebuild or a fix. Lumen pins this package's
+version in two places (`release.yml` and `cmake/Dependencies.cmake`'s iOS
+branch), so a bump there is a one-line change once the release is out.
 
 ## Releasing
 
 Publishing a GitHub release tagged `vX.Y.Z` (matching `VERSION`) runs
 `.github/workflows/release.yml`: the three slices build on `macos-latest` and
-their tarballs are attached to the release with a `SHA256SUMS` file. A manual
+their tarballs are attached to the release, beside the desktop lumenlib
+packages ([README](../README.md#releases)), with a `SHA256SUMS` file. A manual
 dispatch runs the same builds and keeps the packages as workflow artifacts
 only.
