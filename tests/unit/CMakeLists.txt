@@ -9,6 +9,7 @@ add_executable(lumenlib_tests
   test_makernote.cpp
   test_samples.cpp
   test_movie.cpp
+  test_movie_trim.cpp
   test_robustness.cpp)
 target_link_libraries(lumenlib_tests PRIVATE lumenlib::lumenlib)
 target_compile_definitions(lumenlib_tests PRIVATE LUMENLIB_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")

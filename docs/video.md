@@ -3,8 +3,8 @@
 lumenlib reads photos' metadata. This page covers two additions for the video
 files Lumen keeps beside them, MP4 and QuickTime (MOV, M4V, 3GP): reading what
 the container says about a movie (built, 0.2.0: `<lumenlib/movie.hpp>`), and
-writing a trimmed copy of one (planned). Neither decodes a sample, so both
-stay within lumenlib's rules: no required dependencies, every read
+writing a trimmed copy of one (built, 0.3.0: `trimMovie`). Neither decodes a
+sample, so both stay within lumenlib's rules: no required dependencies, every read
 bounds-checked, and no codec in the library, patented or otherwise.
 
 The reasons are in Lumen's `pm/ADD_CODEC_LICENSING.md` (§7–§8 in
@@ -59,36 +59,71 @@ whose tags are EBML and not boxes.
 
 ## Trimming
 
-A copy of `[start, end)` of the movie, with no sample decoded:
+A copy of `[start, end)` of the movie, with no sample decoded. As built
+(`src/movie_trim.cpp`):
 
-- **Samples, per track.** Video starts at the sync sample (`stss`) at or
-  before `start`, and ends at the first sample presented at or after `end`,
-  plus whatever frame reordering (`ctts`) needs. Audio and timed-metadata
-  tracks keep the samples that cover the range.
-- **Tables.** `stts`, `ctts`, `stss`, `stsc`, `stsz`, and `stco` (`co64` once
-  the output passes 4 GiB) are rewritten, as are `sdtp` and `sgpd`/`sbgp` when
-  present. The durations in `mvhd`, `tkhd` and `mdhd` are updated.
-- **An exact start.** Each track gets an edit list (`elst`) whose media time
-  skips from the sync sample to `start`, so the copy plays from the very
-  frame. An edit list already in the input (encoder priming, an earlier
-  trim) is composed with the new one, not replaced.
-- **Tags.** Keep all, keep all but location, or keep none. "Location" means
-  the ISO 6709 keys, `©xyz`, `loci`, and timed-metadata tracks whose keys name
-  a place. The display matrix is not a tag and always goes along. The
-  original's `mvhd` creation time goes along too, since a passthrough export
-  that stamps the copy with the time it was made loses the date (Lumen,
-  Phase 50).
-- **Output.** The input's own brand and container: a MOV stays a MOV. One
-  `mdat`, with samples interleaved by time. The copy is written through an
-  `OutputSink`, and a file is replaced only after its new version has been
-  written in full, as lumenlib's other writers do.
+- **Whole frames.** The range is widened to whole pictures of the picture
+  track (the first enabled video track with samples): it starts where the
+  picture showing at `start` begins and ends where the one showing just
+  before `end` ends. Players disagree over a picture an edit list cuts into
+  (FFmpeg drops it, AVFoundation shows it) and agree over one it holds
+  whole. The picture track's edit starts on that picture's own composition
+  time, which a movie timescale coarser than the frames would miss.
+- **Samples, per track.** Each track's edit list, or the one it implies,
+  is cut to the range: that is the new edit list, and the media times it
+  shows. The samples those need are one run in decode order, from the sync
+  sample (`stss`; every sample without one) at or before the first shown to
+  the last one shown, which holds whatever frame reordering (`ctts`) needs.
+  Sound keeps one sample more before the first heard, for the decoder's
+  overlap (the edit list skips it). A track that shows nothing in the range
+  is left out, and so are hint tracks, which point into other tracks'
+  samples by offset.
+- **Tables.** `stts`, `ctts`, `stss`, `stps`, `stsz` (an `stz2` is written
+  as one), `sdtp` and `sbgp` are cut to the run; `stsc` and `stco` (`co64`
+  when an offset passes 4 GiB) are written for the new chunks; `cslg` is
+  measured again; `stsd` and `sgpd` are copied. `subs`, `saiz`, `saio`,
+  `stsh`, `padb` and `stdp` are left out. `mvhd`, `tkhd` and `mdhd` get the
+  new durations.
+- **An exact start.** Each track gets an edit list whose media time skips
+  from its first sample to the start. An edit list already in the input
+  (encoder priming, an empty edit, an earlier trim) is cut, not replaced:
+  its empty edits stay empty, and its pieces of media stay in their order.
+  A picture shown before it is decoded (a negative composition offset)
+  moves every offset later rather than ask for an edit before the media.
+- **Chunks.** The input's chunks, cut to each run, are copied in the order
+  they lie in the file, so the copy is interleaved as the original was, and
+  read front to back.
+- **Tags.** `all` keeps every tag and box. `noLocation` takes out every key
+  and item whose name speaks of a place (`location`, `ISO6709`, `gps`,
+  `©xyz`...), XMP (`XMP_`, `uuid`, a meta's `xml `), and from `udta` all but
+  QuickTime's `©` text items (not `©xyz`) and 3GPP's text boxes (not
+  `loci`); timed-metadata tracks unless every key in their `mebx` sample
+  entries is known and none names a place (a GoPro's `gpmd` or a `camm`
+  track is dropped: its samples may be coordinates), and text and subtitle
+  tracks, whose samples may carry a place (a drone's). `none` keeps no
+  `meta` or `udta` box, no timed-metadata, text or subtitle track, and sets
+  every creation and modification time to 0. The display matrix is not a
+  tag: it always goes along, and so, unless the tags are `none`, does the
+  original's `mvhd` creation time (a passthrough export that stamps the copy
+  with the time it was made loses the date: Lumen, Phase 50). A track
+  reference to a track left out is taken out with it.
+- **Output.** The input's `ftyp` (and, with `all`, its top-level `uuid` and
+  `meta` boxes), then the movie box, then one `mdat` (a 64-bit one past
+  4 GiB). The copy is written through an `OutputSink`; the path overload
+  writes beside the output and renames it into place only once whole, so
+  `out` may be `in`.
+- **Refused.** A fragmented movie (`mvex`, `moof`), an encrypted track
+  (`encv`, `enca`...), samples in another file (`dref`), and an edit that
+  changes speed (unsupportedOperation); a range that holds none of the movie
+  (invalidArgument); tables that disagree with each other, or samples
+  outside the file (corruptData). `progress` is told the bytes copied and
+  may stop the copy (cancelled).
 
 ## Shape
 
-The reader is as below (`include/lumenlib/movie.hpp` has the whole of it:
-also a track's id, flag, timescale and sample count, and the movie's brand
-and fragmented flag). The trim is not final; it follows `ImageFile`'s
-conventions (paths, `InputSource`, `Error` on failure):
+In short (`include/lumenlib/movie.hpp` has the whole of it: also a track's
+id, flag, timescale and sample count, and the movie's brand and fragmented
+flag):
 
 ```cpp
 // <lumenlib/movie.hpp>
@@ -114,11 +149,20 @@ struct MovieInfo {
 };
 
 MovieInfo readMovie(const std::filesystem::path& path);
-MovieInfo readMovie(InputSource& source);
+MovieInfo readMovie(const InputSource& source);
 
 enum class MovieTags { all, noLocation, none };
-void trimMovie(InputSource& in, OutputSink& out, std::int64_t start_ms, std::int64_t end_ms,
-               MovieTags tags);
+struct MovieTrim {
+  std::uint64_t start_ms = 0;
+  std::uint64_t end_ms = 0;  // 0: to the end
+  MovieTags tags = MovieTags::all;
+  std::function<bool(std::uint64_t done, std::uint64_t total)> progress;  // false: stop
+};
+struct TrimmedMovie { std::uint64_t duration_ms = 0; };
+
+TrimmedMovie trimMovie(const InputSource& in, OutputSink& out, const MovieTrim& trim);
+TrimmedMovie trimMovie(const std::filesystem::path& in, const std::filesystem::path& out,
+                       const MovieTrim& trim);
 
 }  // namespace lumenlib
 ```
@@ -130,11 +174,17 @@ void trimMovie(InputSource& in, OutputSink& out, std::int64_t start_ms, std::int
   and a timed-metadata track, turned; an Android MP4 with `©xyz`; an FFmpeg
   MP4 with `use_metadata_tags`; a mirrored clip with iTunes items; an
   anamorphic, encrypted clip with version 1 headers; and a fragmented one
-  (`tests/unit/test_movie.cpp`). The trim will need one with B-frames
-  (`ctts`) and one with an edit list already in it, with real samples.
-- **Round trips.** Trim, read the copy back, and compare the tables, the edit
-  list and the tags. Lumen's own suites check the first frame decodes to the
-  original's frame at `start`.
-- **Robustness.** `fuzz_movie` covers the reader (and will cover the trim),
-  and the robustness test truncates every movie fixture at every length and
-  mutates each 2000 times under AddressSanitizer, as it does the images.
+  (`tests/unit/test_movie.cpp`). For the trim, two with real sample tables,
+  each sample marked with its track and number: an FFmpeg-style MP4 with
+  B-frames (`ctts`), AAC priming, `sdtp` and a sample grouping, and a MOV
+  with an edit list already in it (an empty edit, media out of order), a
+  timed-metadata track naming a location, a chapter track (`stz2`) and
+  64-bit chunk offsets (`tests/unit/test_movie_trim.cpp`).
+- **Round trips.** Trim, read the copy back box by box, and compare which
+  samples it holds (byte for byte), the tables, the edit lists and the
+  tags; trim a copy again. Lumen's own suites decode the copies on both of
+  its engines and check the first frame is the original's frame at `start`.
+- **Robustness.** `fuzz_movie` covers the reader and the trim, and the
+  robustness test truncates every movie fixture at every length and mutates
+  each 2000 times, reading and trimming each under AddressSanitizer, as it
+  does the images.

@@ -55,6 +55,7 @@ add_library(lumenlib
   src/raf.cpp
   src/bmff.cpp
   src/movie.cpp
+  src/movie_trim.cpp
   src/sidecar.cpp
   src/photo_info.cpp
   src/md5.cpp

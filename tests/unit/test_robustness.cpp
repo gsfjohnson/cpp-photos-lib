@@ -74,17 +74,31 @@ TEST(robustness_mutation) {
 
 namespace {
 
-const char* const kMovies[] = {"iphone.mov",   "android.mp4",    "ffmpeg.mp4",
-                               "mirrored.mp4", "anamorphic.mov", "fragmented.mp4"};
+const char* const kMovies[] = {"iphone.mov",     "android.mp4",    "ffmpeg.mp4", "mirrored.mp4",
+                               "anamorphic.mov", "fragmented.mp4", "bframes.mp4", "edited.mov"};
 
-// Reads the movie. Only lumenlib::Error may escape.
+// Reads the movie and trims it three ways. Only lumenlib::Error may escape.
 void exerciseMovie(const Bytes& data) {
+  const MemorySource source(data);
   try {
-    const MemorySource source(data);
     const MovieInfo info = readMovie(source);
     (void)info.firstTrack("vide");
     (void)info.item("com.apple.quicktime.make");
   } catch (const Error&) {
+  }
+  for (const MovieTags tags : {MovieTags::all, MovieTags::noLocation, MovieTags::none}) {
+    try {
+      MovieTrim trim;
+      trim.start_ms = tags == MovieTags::all ? 0 : 450;
+      trim.end_ms = tags == MovieTags::none ? 0 : 1300;
+      trim.tags = tags;
+      MemorySink sink;
+      trimMovie(source, sink, trim);
+      // What it writes, it reads.
+      const MemorySource copy(sink.release());
+      (void)readMovie(copy);
+    } catch (const Error&) {
+    }
   }
 }
 

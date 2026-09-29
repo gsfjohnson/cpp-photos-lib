@@ -1,5 +1,5 @@
 # libFuzzer targets (Clang only): fuzz_image over every image format's reader
-# and writer, fuzz_movie over the movie reader.
+# and writer, fuzz_movie over the movie reader and trim.
 #
 #   CXX=clang++ cmake -S . -B build-fuzz -DLUMENLIB_BUILD_FUZZERS=ON
 #   cmake --build build-fuzz --target fuzz_image fuzz_movie

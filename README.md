@@ -1,8 +1,8 @@
 # lumenlib
 
 A C++17 library for reading and writing photo metadata (Exif, IPTC and XMP),
-and for reading what an MP4 or QuickTime movie says about itself,
-built for the Lumen photo album app, which ships on Windows, macOS, Linux,
+and for reading what an MP4 or QuickTime movie says about itself and
+writing a trimmed copy of one, built for the Lumen photo album app, which ships on Windows, macOS, Linux,
 iOS and Android. It is [MIT](LICENSE)-licensed and written from the file
 format specifications, so an application can link it without taking on
 copyleft terms.
@@ -55,7 +55,7 @@ onto this library.
 | Canon CR3 | Exif, XMP, maker note | not yet |
 | JPEG XL (container) | Exif, XMP | not yet |
 | XMP sidecar (`.xmp`) | XMP | XMP |
-| MP4, QuickTime (MOV, M4V, 3GP) | the movie: times, length, tracks, tags ([below](#movies)) | not yet |
+| MP4, QuickTime (MOV, M4V, 3GP) | the movie: times, length, tracks, tags ([below](#movies)) | a trimmed copy, its tags kept, without location, or none ([below](#movies)) |
 
 For the read-only formats, write edits to an XMP sidecar (Lightroom and
 darktable do the same), or, for a HEIF being encoded, pass
@@ -139,8 +139,22 @@ if (const auto* where = movie.item("com.apple.quicktime.location.ISO6709")) std:
 
 The items are the QuickTime keys at `moov/meta` (Apple's) and
 `moov/udta/meta` (FFmpeg's `use_metadata_tags`), iTunes-style items, and
-`udta`'s own (`©xyz`, `©day`), as text, each with its `MovieItemKind`. [docs/video.md](docs/video.md) has
-the boxes read, and the trimmed copies still to come.
+`udta`'s own (`©xyz`, `©day`), as text, each with its `MovieItemKind`.
+
+`trimMovie()` writes a part of one, again with no sample decoded: the
+samples are copied, the sample tables cut, and an edit list starts the copy
+on the very frame.
+
+```cpp
+lumenlib::MovieTrim trim;
+trim.start_ms = 1200;
+trim.end_ms = 5400;                                   // 0: to the end
+trim.tags = lumenlib::MovieTags::noLocation;          // all, noLocation or none
+lumenlib::trimMovie("IMG_0002.MOV", "IMG_0002 trimmed.MOV", trim);  // or InputSource -> OutputSink
+```
+
+[docs/video.md](docs/video.md) has the boxes read and written, and what a
+trim keeps.
 
 ### Keys
 
@@ -211,7 +225,7 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 - cross-compiles for iOS (device and both Simulator architectures) and for
   Android (arm64-v8a, armeabi-v7a, x86_64);
 - fuzzes the image readers and writers for two minutes, and the movie
-  reader for two more.
+  reader and trim for two more.
 
 ## Releases
 
@@ -273,5 +287,5 @@ What a photo album might still want, roughly in order:
   into the XMP data;
 - JPEG XL's Brotli-compressed boxes;
 - XMP qualifiers other than `xml:lang`;
-- trimmed copies of MP4 and QuickTime movies ([docs/video.md](docs/video.md));
-  Matroska and WebM.
+- fragmented MP4s' samples (`moof`), for reading and trimming; Matroska and
+  WebM.

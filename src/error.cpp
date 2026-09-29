@@ -21,6 +21,8 @@ const char* toString(ErrorCode code) noexcept {
       return "invalid argument";
     case ErrorCode::dataTooLarge:
       return "data too large";
+    case ErrorCode::cancelled:
+      return "cancelled";
   }
   return "unknown error";
 }

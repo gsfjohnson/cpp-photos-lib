@@ -18,6 +18,7 @@ enum class ErrorCode {
   unsupportedOperation,  // recognised, but this operation is not implemented for it
   invalidArgument,       // a key, value or parameter is not valid
   dataTooLarge,          // the metadata does not fit the container's limits
+  cancelled,             // the caller asked for the work to stop (a trim's progress)
 };
 
 LUMENLIB_EXPORT const char* toString(ErrorCode code) noexcept;

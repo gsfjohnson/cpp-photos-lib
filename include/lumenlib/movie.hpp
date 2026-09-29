@@ -1,8 +1,8 @@
 // What an MP4 or QuickTime movie (MOV, M4V, 3GP) says about itself, read
 // from its `moov` box: the movie header's times and duration, each track's
 // kind, codec, size, pixel aspect, display matrix and timing, and the tags —
-// QuickTime metadata keys, iTunes-style items and user data. No sample is
-// read or decoded.
+// QuickTime metadata keys, iTunes-style items and user data — and a trimmed
+// copy of one. No sample is decoded.
 #pragma once
 
 #include <lumenlib/export.hpp>
@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -85,5 +86,61 @@ LUMENLIB_EXPORT MovieInfo readMovie(const std::filesystem::path& path);
 constexpr std::int64_t movieTimeToUnix(std::uint64_t seconds) noexcept {
   return static_cast<std::int64_t>(seconds) - 2082844800;
 }
+
+// Which of a movie's tags a trimmed copy keeps. Each keeps less than the one
+// before it. The display matrix is not a tag: it always goes along.
+enum class MovieTags {
+  all,         // every tag, and the movie header's times
+  // Every tag but those that could say where: keys and items whose name
+  // speaks of a location, udta's ©xyz and loci, XMP, and any other udta box
+  // that is not plain text; timed-metadata tracks unless every key of theirs
+  // is known and none names a location, and text and subtitle tracks, whose
+  // samples may carry a place (a drone's). The times stay.
+  noLocation,
+  // No tag at all: no meta or udta box, no timed-metadata, text or subtitle
+  // track, and every creation and modification time 0.
+  none,
+};
+
+// A trimmed copy of the part of a movie from start_ms to end_ms.
+struct LUMENLIB_EXPORT MovieTrim {
+  std::uint64_t start_ms = 0;
+  std::uint64_t end_ms = 0;  // 0: to the end
+  MovieTags tags = MovieTags::all;
+  // Told the bytes of samples written so far and how many there will be, as
+  // the copy goes; returning false stops it with Error(cancelled).
+  std::function<bool(std::uint64_t done, std::uint64_t total)> progress;
+};
+
+struct LUMENLIB_EXPORT TrimmedMovie {
+  std::uint64_t duration_ms = 0;  // the copy's, as its movie header says
+};
+
+// Writes the part of an MP4 or QuickTime movie that `trim` names, with no
+// sample decoded. The range is widened to whole pictures of the video: it
+// starts where the picture showing at start_ms begins and ends where the one
+// showing just before end_ms ends, since players disagree over a picture an
+// edit list cuts into. Each track's samples, from the sync sample at or
+// before the start (and, for sound, one before that, for the decoder's
+// overlap) to the last one shown before the end, whatever frame reordering
+// needs, are copied into one media data box after the movie box, and each
+// track gets an edit list that shows exactly that range, composed with any
+// it had. The copy keeps
+// the original's brand, its tracks' sample descriptions, its display matrix
+// and, unless the tags are none, its times; `trim.tags` says which tags go
+// along. A track with nothing to show in the range is left out.
+//
+// Throws Error(unsupportedFormat) for data that is not an ISO movie,
+// Error(unsupportedOperation) for one this cannot copy (fragmented,
+// encrypted, an edit that changes speed), Error(invalidArgument) when the
+// range holds nothing of the movie, Error(corruptData) for damaged tables
+// or samples outside the file, and Error(cancelled) when `progress` says to
+// stop; `out` then holds a partial copy, which the caller discards.
+LUMENLIB_EXPORT TrimmedMovie trimMovie(const InputSource& in, OutputSink& out, const MovieTrim& trim);
+// The same between files: `out` is written beside itself and renamed into
+// place only once whole, so a failure leaves any file there as it was. `out`
+// may be `in`.
+LUMENLIB_EXPORT TrimmedMovie trimMovie(const std::filesystem::path& in, const std::filesystem::path& out,
+                                       const MovieTrim& trim);
 
 }  // namespace lumenlib

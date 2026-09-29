@@ -22,6 +22,26 @@ checks for.
                 720x576 picture with pasp 64:45, encrypted (encv, frma avc1).
 - fragmented.mp4  An mvex with mehd, a movie header duration of 0, and
                 moof/mdat pairs after the movie box.
+
+Two more have real sample tables, for the trim (test_movie_trim.cpp). Each
+sample's bytes begin with its track id and its number in decode order (two
+16-bit words), so a test can tell which samples a copy holds.
+
+- bframes.mp4   What FFmpeg writes for H.264 with B-frames and AAC, 2 s: video
+                at 12800 ticks a second, 25 fps, a sync sample every 10, frames
+                reordered (ctts: I P B B P B B P B B), an edit list skipping
+                the first 1024 ticks, sdtp and a sample grouping; AAC at 48 kHz
+                with an edit list skipping its 1024 samples of priming; chunks
+                interleaved by time. Tags: Apple's make, creationdate and ISO
+                6709 keys at moov/meta (an ISO meta), and udta's ©nam, ©xyz
+                and loci.
+- edited.mov    QuickTime, 600 ticks a second, video at 30 fps (a sync sample
+                every 15, no reordering) with an edit list already in it: 0.5 s
+                empty, then media 0.5-1.5 s, then media 1.0-1.5 s again; a
+                timed-metadata track (mebx) whose key is a location, one sample
+                over the whole movie; a chapter track (text, tx3g, stz2) the
+                video names in tref/chap; 64-bit chunk offsets; Apple's model
+                and ISO 6709 keys at moov/meta, udta's ©day and ©xyz.
 """
 import os
 import struct
@@ -253,6 +273,173 @@ def fragmented():
     write("fragmented.mp4", ftyp("iso6", "iso6", "dash"), moov, fragment, fragment)
 
 
+def sample_bytes(track, index, size):
+    head = u16(track) + u16(index)
+    return head + bytes((track * 31 + index + i) & 0xFF for i in range(size - len(head)))
+
+
+def lay_out(start, tracks):
+    """Places each track's chunks in one mdat at `start`, in the order their
+    times begin. `tracks` maps a track id to (timescale, [chunk, ...]), a chunk
+    being a list of (decode time, bytes). Returns the mdat and, per track, its
+    chunk offsets."""
+    pending = []
+    for track, (timescale, chunks) in tracks.items():
+        for n, chunk in enumerate(chunks):
+            pending.append((chunk[0][0] / timescale, track, n, b"".join(data for _, data in chunk)))
+    pending.sort()
+    offsets = {track: [0] * len(chunks) for track, (_, chunks) in tracks.items()}
+    body = b""
+    at = start + 8
+    for _, track, n, data in pending:
+        offsets[track][n] = at + len(body)
+        body += data
+    return box("mdat", body), offsets
+
+
+def runs(values):
+    out = []
+    for v in values:
+        if out and out[-1][1] == v:
+            out[-1][0] += 1
+        else:
+            out.append([1, v])
+    return out
+
+
+def sample_table(entry, deltas, sizes, chunk_sizes, offsets, sync=None, ctts=None,
+                 extra=(), wide=False, compact=False):
+    """An stbl for samples given one by one: their durations and sizes, the
+    chunks' sample counts and offsets, the sync samples (1-based), the
+    composition offsets."""
+    parts = [full("stsd", 0, 0, u32(1), entry)]
+    parts.append(full("stts", 0, 0, u32(len(runs(deltas))), *(u32(n) + u32(d) for n, d in runs(deltas))))
+    if ctts is not None:
+        parts.append(full("ctts", 0, 0, u32(len(runs(ctts))), *(u32(n) + u32(d) for n, d in runs(ctts))))
+    if sync is not None:
+        parts.append(full("stss", 0, 0, u32(len(sync)), *(u32(n) for n in sync)))
+    parts.extend(extra)
+    stsc = []
+    for n, count in enumerate(chunk_sizes):
+        if not stsc or stsc[-1][1] != count:
+            stsc.append((n + 1, count))
+    parts.append(full("stsc", 0, 0, u32(len(stsc)), *(u32(f) + u32(c) + u32(1) for f, c in stsc)))
+    if compact:
+        parts.append(full("stz2", 0, 0, bytes(3), u8(16), u32(len(sizes)), *(u16(v) for v in sizes)))
+    else:
+        parts.append(full("stsz", 0, 0, u32(0), u32(len(sizes)), *(u32(v) for v in sizes)))
+    if wide:
+        parts.append(full("co64", 0, 0, u32(len(offsets)), *(u64(o) for o in offsets)))
+    else:
+        parts.append(full("stco", 0, 0, u32(len(offsets)), *(u32(o) for o in offsets)))
+    return box("stbl", *parts)
+
+
+def elst(*edits):
+    body = b"".join(u32(d) + i32(m) + u32(0x10000) for d, m in edits)
+    return box("edts", full("elst", 0, 0, u32(len(edits)), body))
+
+
+def real_trak(track_id, handler, timescale, media_ticks, movie_ticks, table, size=(0, 0),
+              edits=None, tref=None, component=b"\0\0\0\0"):
+    dinf = box("dinf", full("dref", 0, 0, u32(1), full("url ", 0, 1)))
+    media = box("mdia", mdhd(timescale, media_ticks), hdlr(handler, component), box("minf", dinf, table))
+    parts = [tkhd(track_id, movie_ticks, size[0], size[1])]
+    if edits is not None:
+        parts.append(edits)
+    if tref is not None:
+        parts.append(tref)
+    parts.append(media)
+    return box("trak", *parts)
+
+
+def interleaved(ftyp_box, moov_of, tracks):
+    """ftyp, moov and mdat, the moov made twice: once to learn its size, once
+    with the chunks' real offsets."""
+    _, offsets = lay_out(0, tracks)
+    start = len(ftyp_box) + len(moov_of(offsets))
+    mdat, offsets = lay_out(start, tracks)
+    moov = moov_of(offsets)
+    assert len(ftyp_box) + len(moov) == start
+    return ftyp_box, moov, mdat
+
+
+def bframes():
+    # Video: 50 frames of 512 ticks; in decode order each GOP of ten is
+    # I P B B P B B P B B, shown two frames late (the edit list skips them).
+    display = [0, 3, 1, 2, 6, 4, 5, 9, 7, 8]
+    v_count = 50
+    v_sizes = [40 + (i * 7) % 23 for i in range(v_count)]
+    v_ctts = [(display[i % 10] + (i // 10) * 10 + 2) * 512 - i * 512 for i in range(v_count)]
+    v_data = [(i * 512, sample_bytes(1, i, v_sizes[i])) for i in range(v_count)]
+    v_chunks = [v_data[i:i + 5] for i in range(0, v_count, 5)]
+    # Sound: 95 AAC frames of 1024 at 48 kHz, the first 1024 samples priming.
+    a_count = 95
+    a_sizes = [20 + (i * 5) % 11 for i in range(a_count)]
+    a_data = [(i * 1024, sample_bytes(2, i, a_sizes[i])) for i in range(a_count)]
+    a_chunks = [a_data[i:i + 10] for i in range(0, a_count, 10)]
+    sdtp = full("sdtp", 0, 0, bytes(i & 0xFF for i in range(v_count)))
+    grouping = full("sbgp", 0, 0, b"rap ", u32(2), u32(10), u32(1), u32(40), u32(0))
+
+    def moov_of(offsets):
+        video = real_trak(1, "vide", 12800, v_count * 512, 2000, sample_table(
+            visual(b"avc1", 160, 120, box("avcC", bytes(12))), [512] * v_count, v_sizes,
+            [len(c) for c in v_chunks], offsets[1], sync=[1, 11, 21, 31, 41], ctts=v_ctts,
+            extra=(sdtp, grouping)), (160, 120), edits=elst((2000, 1024)))
+        audio = real_trak(2, "soun", 48000, a_count * 1024, 2000, sample_table(
+            sound(b"mp4a", box("esds", bytes(20))), [1024] * a_count, a_sizes,
+            [len(c) for c in a_chunks], offsets[2]), edits=elst((2000, 1024)))
+        meta = keys_meta([
+            ("com.apple.quicktime.make", text_item("Apple")),
+            ("com.apple.quicktime.location.ISO6709", text_item("+59.9139+010.7522+012.000/")),
+            ("com.apple.quicktime.creationdate", text_item("2025-03-01T08:15:00+0100")),
+        ], quicktime=False)
+        loci = full("loci", 0, 0, u16(0x15C7), b"Oslo\0", u8(0), u32(0), u32(0), u32(0), b"Earth\0", b"\0")
+        udta = box("udta", qt_text(b"\xa9nam", "Fjord"), qt_text(b"\xa9xyz", "+59.9139+010.7522/"), loci)
+        return box("moov", mvhd(movie_time("2025-03-01T07:15:00+00:00"), 1000, 2000, 3),
+                   video, audio, meta, udta)
+
+    write("bframes.mp4", *interleaved(ftyp("isom", "isom", "iso2", "avc1", "mp41"), moov_of,
+                                      {1: (12800, v_chunks), 2: (48000, a_chunks)}))
+
+
+def edited():
+    v_count = 60
+    v_sizes = [30 + (i * 3) % 17 for i in range(v_count)]
+    v_data = [(i * 20, sample_bytes(1, i, v_sizes[i])) for i in range(v_count)]
+    v_chunks = [v_data[i:i + 15] for i in range(0, v_count, 15)]
+    m_data = [(0, sample_bytes(2, 0, 24))]
+    t_sizes = [16, 18]
+    t_data = [(i * 600, sample_bytes(3, i, t_sizes[i])) for i in range(2)]
+    location = "com.apple.quicktime.location.ISO6709"
+    mebx = box("mebx", bytes(6), u16(1),
+               box("keys", box(u32(1), box("keyd", b"mdta" + location.encode()),
+                               box("dtyp", u32(0), u32(1)))))
+    tx3g = box("tx3g", bytes(6), u16(1), bytes(30))
+
+    def moov_of(offsets):
+        video = real_trak(1, "vide", 600, 1200, 1200, sample_table(
+            visual(b"avc1", 160, 120, box("avcC", bytes(12))), [20] * v_count, v_sizes,
+            [len(c) for c in v_chunks], offsets[1], sync=[1, 16, 31, 46], wide=True), (160, 120),
+            edits=elst((300, -1), (600, 300), (300, 600)), tref=box("tref", box("chap", u32(3))),
+            component=b"mhlr")
+        timed = real_trak(2, "meta", 600, 1200, 1200, sample_table(
+            mebx, [1200], [24], [1], offsets[2], wide=True), component=b"mhlr")
+        chapters = real_trak(3, "text", 600, 1200, 1200, sample_table(
+            tx3g, [600, 600], t_sizes, [1, 1], offsets[3], wide=True, compact=True), component=b"mhlr")
+        udta = box("udta", qt_text(b"\xa9day", "2021-03-04T05:06:07Z"), qt_text(b"\xa9xyz", "-33.8688+151.2093/"))
+        meta = keys_meta([
+            ("com.apple.quicktime.location.ISO6709", text_item("-33.8688+151.2093+005.000/")),
+            ("com.apple.quicktime.model", text_item("iPhone 12")),
+        ], quicktime=True)
+        return box("moov", mvhd(movie_time("2021-03-04T05:06:07+00:00"), 600, 1200, 4),
+                   video, timed, chapters, meta, udta)
+
+    write("edited.mov", *interleaved(ftyp("qt  ", "qt  "), moov_of,
+                                     {1: (600, v_chunks), 2: (600, [m_data]),
+                                      3: (600, [t_data[:1], t_data[1:]])}))
+
+
 def main():
     iphone()
     android()
@@ -260,6 +447,8 @@ def main():
     mirrored()
     anamorphic()
     fragmented()
+    bframes()
+    edited()
 
 
 if __name__ == "__main__":
