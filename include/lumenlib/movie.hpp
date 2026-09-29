@@ -18,6 +18,16 @@
 
 namespace lumenlib {
 
+// One entry of a track's edit list (elst): which part of the track's media
+// shows at which part of the movie. Players show the media through its edits;
+// a demuxer that ignores them (Media Foundation's) reports media times, which
+// a program maps through them itself.
+struct LUMENLIB_EXPORT MovieEdit {
+  std::uint64_t duration = 0;  // in the movie's timescale (mvhd's); 0 for the rest of the media
+  std::int64_t media_time = 0; // in the track's timescale (mdhd's); -1 for an empty edit
+  std::int32_t rate = 0x10000; // 16.16 fixed point: 1 plays at normal speed, 0 holds a frame
+};
+
 struct LUMENLIB_EXPORT MovieTrack {
   std::uint32_t id = 0;
   bool enabled = true;           // tkhd's flag
@@ -38,6 +48,9 @@ struct LUMENLIB_EXPORT MovieTrack {
   // track); a track's last sample is left out when others differ from it,
   // since writers give it whatever is left. 0 when the track has no samples.
   double min_sample_ms = 0;
+  // The edit list, in order; empty when the track has none (its media shows
+  // from time 0 of the movie).
+  std::vector<MovieEdit> edits;
 };
 
 // A tag, by where it was found.

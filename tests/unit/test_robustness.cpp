@@ -11,10 +11,16 @@ using namespace lumenlib;
 namespace {
 
 const char* const kFixtures[] = {"photo.jpg",     "motorola.jpg", "multi.mpo",  "photo.png",  "photo.webp",
-                                 "lossless.webp", "photo.tif",    "photo.heic", "photo.avif", "photo.xmp"};
+                                 "lossless.webp", "photo.tif",    "photo.heic", "photo.avif", "turned.avif",
+                                 "transverse.avif", "photo.xmp"};
 
 // Reads, and when possible writes, the data. Only lumenlib::Error may escape.
 void exercise(Bytes data) {
+  try {
+    const MemorySource source(data);
+    (void)readHeifImage(source);
+  } catch (const Error&) {
+  }
   try {
     auto file = ImageFile::open(std::move(data));
     file->load();

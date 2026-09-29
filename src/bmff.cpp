@@ -10,6 +10,7 @@
 //   JPEG XL          "Exif" and "xml " boxes. Brotli-compressed ("brob")
 //                    boxes are skipped.
 #include <lumenlib/error.hpp>
+#include <lumenlib/heif.hpp>
 
 #include "bmff_boxes.hpp"
 #include "bytes.hpp"
@@ -38,10 +39,108 @@ struct Item {
 };
 
 struct Property {
-  enum class Kind { size, crop, rotation } kind;
+  enum class Kind { size, crop, rotation, mirror } kind;
   std::uint32_t width, height;
-  unsigned rotation;  // quarter turns
+  unsigned rotation;  // irot: quarter turns anticlockwise; imir: its axis bit
 };
+
+std::size_t payloadSize(const Box& b) {
+  if (b.size() > kMaxItem) throw Error(ErrorCode::dataTooLarge, "'" + b.type + "' box too large");
+  return static_cast<std::size_t>(b.size());
+}
+
+// pitm: the primary item's id.
+std::uint32_t readPitm(const InputSource& src, const Box& pitm) {
+  Reader r(src.readBytes(pitm.payload, payloadSize(pitm)));
+  const auto version = r.read(1);
+  r.read(3);
+  return static_cast<std::uint32_t>(r.read(version == 0 ? 2 : 4));
+}
+
+void readIinf(const InputSource& src, const Box& iinf, std::map<std::uint32_t, Item>& items, std::size_t& budget) {
+  Reader head(src.readBytes(iinf.payload, std::min<std::size_t>(payloadSize(iinf), 8)));
+  const auto version = head.read(1);
+  head.read(3);
+  head.read(version == 0 ? 2 : 4);  // entry count
+  const std::uint64_t first = iinf.payload + 4 + (version == 0 ? 2 : 4);
+  for (const auto& b : boxes(src, first, iinf.end, budget)) {
+    if (b.type != "infe") continue;
+    Reader r(src.readBytes(b.payload, payloadSize(b)));
+    const auto v = r.read(1);
+    r.read(3);
+    if (v < 2) continue;  // no item types before version 2
+    const auto id = static_cast<std::uint32_t>(r.read(v == 2 ? 2 : 4));
+    r.read(2);  // protection index
+    Item& item = items[id];
+    item.type = r.fourcc();
+    r.cstring();  // name
+    if (item.type == "mime") item.contentType = r.cstring();
+  }
+}
+
+// iprp: the properties (ipco, by 1-based index) and which items they belong
+// to (ipma, in the order they apply).
+void readIprp(const InputSource& src, const Box& iprp, std::map<std::uint32_t, Property>& properties,
+              std::map<std::uint32_t, std::vector<std::uint32_t>>& associations, std::size_t& budget) {
+  for (const auto& b : boxes(src, iprp.payload, iprp.end, budget)) {
+    if (b.type == "ipco") {
+      std::uint32_t index = 0;
+      for (const auto& p : boxes(src, b.payload, b.end, budget)) {
+        ++index;
+        if (p.type == "ispe" && p.size() >= 12) {
+          const Bytes d = src.readBytes(p.payload, 12);
+          properties[index] = {Property::Kind::size, getBe32(d.data() + 4), getBe32(d.data() + 8), 0};
+        } else if (p.type == "clap" && p.size() >= 32) {
+          // Clean aperture: width and height as fractions.
+          const Bytes d = src.readBytes(p.payload, 16);
+          const std::uint32_t wd = getBe32(d.data() + 4), hd = getBe32(d.data() + 12);
+          if (wd && hd) {
+            properties[index] = {Property::Kind::crop, getBe32(d.data()) / wd, getBe32(d.data() + 8) / hd, 0};
+          }
+        } else if (p.type == "irot" && p.size() >= 1) {
+          const Bytes d = src.readBytes(p.payload, 1);
+          properties[index] = {Property::Kind::rotation, 0, 0, d[0] & 3u};
+        } else if (p.type == "imir" && p.size() >= 1) {
+          const Bytes d = src.readBytes(p.payload, 1);
+          properties[index] = {Property::Kind::mirror, 0, 0, d[0] & 1u};
+        }
+      }
+    } else if (b.type == "ipma") {
+      Reader r(src.readBytes(b.payload, payloadSize(b)));
+      const auto version = r.read(1);
+      const auto flags = r.read(3);
+      const auto count = r.read(4);
+      for (std::uint64_t i = 0; i < count; ++i) {
+        const auto id = static_cast<std::uint32_t>(r.read(version < 1 ? 2 : 4));
+        const auto n = r.read(1);
+        auto& list = associations[id];
+        for (std::uint64_t k = 0; k < n; ++k) {
+          const auto v = (flags & 1) ? r.read(2) & 0x7fff : r.read(1) & 0x7f;
+          list.push_back(static_cast<std::uint32_t>(v));
+        }
+      }
+    }
+  }
+}
+
+// A transformation as Exif counts them: a left-right mirror (when
+// `mirrored`) first, then `quarters` clockwise quarter turns.
+struct Turn {
+  unsigned quarters = 0;
+  bool mirrored = false;
+};
+
+// `next` applied after `first`. A mirror reverses the turn before it.
+Turn then(Turn first, Turn next) {
+  const unsigned carried = next.mirrored ? (4 - first.quarters) % 4 : first.quarters;
+  return Turn{(next.quarters + carried) % 4, first.mirrored != next.mirrored};
+}
+
+int exifOrientation(Turn turn) {
+  static constexpr int kPlain[4] = {1, 6, 3, 8};     // 0, 90, 180, 270 degrees clockwise
+  static constexpr int kMirrored[4] = {2, 7, 4, 5};  // the same after a left-right mirror
+  return turn.mirrored ? kMirrored[turn.quarters] : kPlain[turn.quarters];
+}
 
 class BmffFile final : public ImageFile {
  public:
@@ -69,10 +168,7 @@ class BmffFile final : public ImageFile {
   }
 
  private:
-  std::size_t checkedSize(const Box& b) const {
-    if (b.size() > kMaxItem) throw Error(ErrorCode::dataTooLarge, "'" + b.type + "' box too large");
-    return static_cast<std::size_t>(b.size());
-  }
+  static std::size_t checkedSize(const Box& b) { return payloadSize(b); }
 
   std::string readText(const Box& b) const {
     const Bytes d = source().readBytes(b.payload, checkedSize(b));
@@ -116,18 +212,15 @@ class BmffFile final : public ImageFile {
     std::map<std::uint32_t, std::vector<std::uint32_t>> associations;  // item -> property indexes
     for (const auto& b : boxes(src, meta.payload + 4, meta.end, budget)) {
       if (b.type == "pitm") {
-        Reader r(src.readBytes(b.payload, checkedSize(b)));
-        const auto version = r.read(1);
-        r.read(3);
-        primary = static_cast<std::uint32_t>(r.read(version == 0 ? 2 : 4));
+        primary = readPitm(src, b);
       } else if (b.type == "iinf") {
-        readIinf(b, items, budget);
+        readIinf(src, b, items, budget);
       } else if (b.type == "iloc") {
         readIloc(src.readBytes(b.payload, checkedSize(b)), items);
       } else if (b.type == "idat") {
         idat = src.readBytes(b.payload, checkedSize(b));
       } else if (b.type == "iprp") {
-        readIprp(b, properties, associations, budget);
+        readIprp(src, b, properties, associations, budget);
       }
     }
     // The primary item's size as decoded: its ispe, then any crop and
@@ -149,6 +242,8 @@ class BmffFile final : public ImageFile {
             break;
           case Property::Kind::rotation:
             if (p->second.rotation & 1) std::swap(width_, height_);
+            break;
+          case Property::Kind::mirror:
             break;
         }
       }
@@ -174,28 +269,6 @@ class BmffFile final : public ImageFile {
       } else {
         setXmpPacket(toText(data.data(), data.size()));
       }
-    }
-  }
-
-  void readIinf(const Box& iinf, std::map<std::uint32_t, Item>& items, std::size_t& budget) {
-    const InputSource& src = source();
-    Reader head(src.readBytes(iinf.payload, std::min<std::size_t>(checkedSize(iinf), 8)));
-    const auto version = head.read(1);
-    head.read(3);
-    head.read(version == 0 ? 2 : 4);  // entry count
-    const std::uint64_t first = iinf.payload + 4 + (version == 0 ? 2 : 4);
-    for (const auto& b : boxes(src, first, iinf.end, budget)) {
-      if (b.type != "infe") continue;
-      Reader r(src.readBytes(b.payload, checkedSize(b)));
-      const auto v = r.read(1);
-      r.read(3);
-      if (v < 2) continue;  // no item types before version 2
-      const auto id = static_cast<std::uint32_t>(r.read(v == 2 ? 2 : 4));
-      r.read(2);  // protection index
-      Item& item = items[id];
-      item.type = r.fourcc();
-      r.cstring();  // name
-      if (item.type == "mime") item.contentType = r.cstring();
     }
   }
 
@@ -225,47 +298,6 @@ class BmffFile final : public ImageFile {
         const std::uint64_t length = r.read(lengthSize);
         if (offset > UINT64_MAX - base) corrupt("bad iloc extent");
         item.extents.emplace_back(base + offset, length);
-      }
-    }
-  }
-
-  void readIprp(const Box& iprp, std::map<std::uint32_t, Property>& properties,
-                std::map<std::uint32_t, std::vector<std::uint32_t>>& associations, std::size_t& budget) {
-    const InputSource& src = source();
-    for (const auto& b : boxes(src, iprp.payload, iprp.end, budget)) {
-      if (b.type == "ipco") {
-        std::uint32_t index = 0;
-        for (const auto& p : boxes(src, b.payload, b.end, budget)) {
-          ++index;
-          if (p.type == "ispe" && p.size() >= 12) {
-            const Bytes d = src.readBytes(p.payload, 12);
-            properties[index] = {Property::Kind::size, getBe32(d.data() + 4), getBe32(d.data() + 8), 0};
-          } else if (p.type == "clap" && p.size() >= 32) {
-            // Clean aperture: width and height as fractions.
-            const Bytes d = src.readBytes(p.payload, 16);
-            const std::uint32_t wd = getBe32(d.data() + 4), hd = getBe32(d.data() + 12);
-            if (wd && hd) {
-              properties[index] = {Property::Kind::crop, getBe32(d.data()) / wd, getBe32(d.data() + 8) / hd, 0};
-            }
-          } else if (p.type == "irot" && p.size() >= 1) {
-            const Bytes d = src.readBytes(p.payload, 1);
-            properties[index] = {Property::Kind::rotation, 0, 0, d[0] & 3u};
-          }
-        }
-      } else if (b.type == "ipma") {
-        Reader r(src.readBytes(b.payload, checkedSize(b)));
-        const auto version = r.read(1);
-        const auto flags = r.read(3);
-        const auto count = r.read(4);
-        for (std::uint64_t i = 0; i < count; ++i) {
-          const auto id = static_cast<std::uint32_t>(r.read(version < 1 ? 2 : 4));
-          const auto n = r.read(1);
-          auto& list = associations[id];
-          for (std::uint64_t k = 0; k < n; ++k) {
-            const auto v = (flags & 1) ? r.read(2) & 0x7fff : r.read(1) & 0x7f;
-            list.push_back(static_cast<std::uint32_t>(v));
-          }
-        }
       }
     }
   }
@@ -319,3 +351,80 @@ std::unique_ptr<ImageFile> newBmffFile(FileFormat format, std::unique_ptr<InputS
 }
 
 }  // namespace lumenlib::detail
+
+namespace lumenlib {
+
+HeifImage readHeifImage(const InputSource& source) {
+  using namespace detail;
+  const FileFormat format = detectFormat(source);
+  if (format != FileFormat::heif && format != FileFormat::avif) {
+    throw Error(ErrorCode::unsupportedFormat, "not a HEIF or AVIF file");
+  }
+  HeifImage image;
+  std::size_t budget = kMaxBoxes;
+  bool haveMeta = false;
+  std::map<std::uint32_t, Item> items;
+  std::uint32_t primary = 0;
+  bool havePrimary = false;
+  std::map<std::uint32_t, Property> properties;
+  std::map<std::uint32_t, std::vector<std::uint32_t>> associations;
+  for (const auto& top : boxes(source, 0, source.size(), budget)) {
+    if (top.type == "ftyp" && top.size() >= 4 && image.brand.empty()) {
+      const Bytes d = source.readBytes(top.payload, 4);
+      image.brand = toText(d.data(), 4);
+    } else if (top.type == "meta" && !haveMeta) {
+      haveMeta = true;
+      // A full box: 4 bytes of version and flags first.
+      for (const auto& b : boxes(source, top.payload + 4, top.end, budget)) {
+        if (b.type == "pitm") {
+          primary = readPitm(source, b);
+          havePrimary = true;
+        } else if (b.type == "iinf") {
+          readIinf(source, b, items, budget);
+        } else if (b.type == "iprp") {
+          readIprp(source, b, properties, associations, budget);
+        }
+      }
+    }
+  }
+  if (!havePrimary) corrupt("no primary item");
+  if (const auto it = items.find(primary); it != items.end()) image.itemType = it->second.type;
+  Turn turn;
+  bool sized = false;
+  if (const auto it = associations.find(primary); it != associations.end()) {
+    for (const auto index : it->second) {
+      const auto p = properties.find(index);
+      if (p == properties.end()) continue;
+      switch (p->second.kind) {
+        case Property::Kind::size:
+          if (!sized) {
+            image.width = p->second.width;
+            image.height = p->second.height;
+            sized = true;
+          }
+          break;
+        case Property::Kind::rotation:
+          // irot turns anticlockwise; Exif counts clockwise.
+          turn = then(turn, Turn{(4 - p->second.rotation) % 4, false});
+          break;
+        case Property::Kind::mirror:
+          // Axis 1 swaps left and right; axis 0, top and bottom (a left-right
+          // mirror and a half turn).
+          turn = then(turn, p->second.rotation ? Turn{0, true} : Turn{2, true});
+          break;
+        case Property::Kind::crop:
+          break;
+      }
+    }
+  }
+  if (!sized || image.width == 0 || image.height == 0) corrupt("the primary item has no size");
+  image.orientation = exifOrientation(turn);
+  return image;
+}
+
+HeifImage readHeifImage(const std::filesystem::path& path) {
+  const FileSource source(path);
+  return readHeifImage(source);
+}
+
+}  // namespace lumenlib

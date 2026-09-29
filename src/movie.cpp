@@ -3,6 +3,7 @@
 //   moov/mvhd                 the movie's times, timescale and duration
 //   moov/mvex                 present in a fragmented movie (mehd: its length)
 //   moov/trak/tkhd            the track's id, flags and display matrix
+//   moov/trak/edts/elst       its edit list
 //   moov/trak/mdia/hdlr       the track's kind
 //   moov/trak/mdia/mdhd       its timescale and duration
 //   .../minf/stbl/stsd        the first sample entry: the codec, a picture's
@@ -332,8 +333,30 @@ class MovieReader {
       r.skip(4 + width + 16);  // reserved, duration, reserved, layer, group, volume, reserved
       for (auto& m : track.matrix) m = static_cast<std::int32_t>(static_cast<std::uint32_t>(r.read(4)));
     }
+    if (const Box* edts = find(children, "edts")) {
+      const auto list = boxes(src_, edts->payload, edts->end, budget_);
+      if (const Box* elst = find(list, "elst")) readElst(*elst, track);
+    }
     if (const Box* mdia = find(children, "mdia")) readMdia(*mdia, track);
     info_.tracks.push_back(std::move(track));
+  }
+
+  void readElst(const Box& elst, MovieTrack& track) {
+    Reader r(payloadOf(src_, elst));
+    const auto version = r.read(1);
+    r.skip(3);
+    const auto count = r.read(4);
+    const std::size_t width = version == 1 ? 8 : 4;
+    if (count > r.left() / (2 * width + 4)) corrupt("the edit list runs past its box");
+    for (std::uint64_t i = 0; i < count; ++i) {
+      MovieEdit e;
+      e.duration = r.read(width);
+      const std::uint64_t media = r.read(width);
+      e.media_time = width == 8 ? static_cast<std::int64_t>(media)
+                                : static_cast<std::int64_t>(static_cast<std::int32_t>(media));
+      e.rate = static_cast<std::int32_t>(static_cast<std::uint32_t>(r.read(4)));
+      track.edits.push_back(e);
+    }
   }
 
   void readMdia(const Box& mdia, MovieTrack& track) {

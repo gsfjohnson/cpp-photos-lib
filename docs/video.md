@@ -22,6 +22,7 @@ What Lumen's `VideoProbe` needs, all from the `moov` box:
 | --- | --- |
 | `mvhd` | creation and modification times (seconds since 1904), timescale, duration |
 | `trak/tkhd` | the display matrix (turns and mirrors), the track's size |
+| `trak/edts/elst` | the edit list (0.4.0): Media Foundation reports media times and ignores it, so Lumen's Windows engine maps a time through it |
 | `trak/mdia/hdlr` | the track's kind: `vide`, `soun`, `meta` |
 | `trak/mdia/mdhd` | the track's timescale and duration |
 | `stsd` sample entry | the codec (`avc1`/`avc3`, `hvc1`/`hev1`, `av01`, `vp09`, `mp4a`, …), the stored width and height, `pasp` (pixel aspect) |

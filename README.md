@@ -112,6 +112,12 @@ The pieces an application may need on their own:
   and the lens.
 - `setWarningHandler()`: the problems the library works around rather than
   fails on (a damaged XMP packet left out, a damaged IFD entry skipped).
+- `readHeifImage()`: a HEIF, HEIC or AVIF file's primary image as coded (its
+  `ispe`), its item type (`hvc1`, `av01`, `grid`), and the Exif orientation
+  its `irot` and `imir` give, in the order the file applies them. With it a
+  program sizes and orients a photo whose codec it lacks, or hands the pixels
+  to a platform decoder (Windows' WIC) that turns the picture itself.
+  `ImageFile::width()` and `height()` are the image as shown instead.
 
 On Android, a photo from a content URI arrives as a file descriptor, and on
 iOS often as `NSData`. Pass the bytes to `ImageFile::open(Bytes)`, or subclass
@@ -140,6 +146,8 @@ if (const auto* where = movie.item("com.apple.quicktime.location.ISO6709")) std:
 The items are the QuickTime keys at `moov/meta` (Apple's) and
 `moov/udta/meta` (FFmpeg's `use_metadata_tags`), iTunes-style items, and
 `udta`'s own (`©xyz`, `©day`), as text, each with its `MovieItemKind`.
+Each track carries its edit list (`MovieTrack::edits`), for mapping a time in
+the movie to the media time a demuxer that ignores edit lists reports.
 
 `trimMovie()` writes a part of one, again with no sample decoded: the
 samples are copied, the sample tables cut, and an edit list starts the copy
@@ -266,7 +274,7 @@ build paths before it is packaged.
   exiv2 is only run as a program; nothing here links it. The only
   differences it allows are listed in the script, and are by design.
 - `tests/data/generate.py` regenerates the test images with Pillow,
-  pillow-heif and exiftool; `tests/data/make_movies.py` the test movies, box
+  pillow-heif, exiftool and libheif's heif-enc; `tests/data/make_movies.py` the test movies, box
   by box, with Python alone.
 - `tests/find_package` builds against an installed package.
 

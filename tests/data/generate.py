@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Regenerates the test images in this directory.
 
-Needs Pillow (with AVIF), pillow-heif and exiftool:
+Needs Pillow (with AVIF), pillow-heif, exiftool and libheif's heif-enc:
 
-    pip install pillow pillow-heif && apt install libimage-exiftool-perl
+    pip install pillow pillow-heif && apt install libimage-exiftool-perl libheif-examples
     python3 tests/data/generate.py
 
 The images are small and committed, so the tests need none of this. The
@@ -151,6 +151,17 @@ def main():
         im.save(path("photo.heic"), exif=exif.tobytes(), xmp=xmp_bytes, quality=60)
     except ImportError:
         print("pillow-heif missing: photo.heic not regenerated")
+
+    # Turned AVIFs: heif-enc keeps a JPEG's pixels as coded and turns its
+    # Exif orientation into irot (6) and irot then imir (7).
+    for name, orientation in (("turned.avif", 6), ("transverse.avif", 7)):
+        source = path("turned-source.jpg")
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        picture().save(source, quality=90, exif=exif.tobytes())
+        subprocess.run(["heif-enc", "-A", "-q", "60", source, "-o", path(name)], check=True,
+                       capture_output=True)
+        os.remove(source)
 
     with open(path("photo.xmp"), "w", encoding="utf-8") as f:
         f.write(XMP)

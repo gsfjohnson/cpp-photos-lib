@@ -5,6 +5,7 @@
 #include <lumenlib/exif.hpp>
 #include <lumenlib/export.hpp>
 #include <lumenlib/field_value.hpp>
+#include <lumenlib/heif.hpp>
 #include <lumenlib/image_file.hpp>
 #include <lumenlib/io.hpp>
 #include <lumenlib/iptc.hpp>

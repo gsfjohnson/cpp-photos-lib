@@ -8,6 +8,7 @@ add_executable(lumenlib_tests
   test_photo_info.cpp
   test_makernote.cpp
   test_samples.cpp
+  test_heif.cpp
   test_movie.cpp
   test_movie_trim.cpp
   test_robustness.cpp)

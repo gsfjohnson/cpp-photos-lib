@@ -212,3 +212,29 @@ TEST(movie_damaged_tags_lose_only_themselves) {
   CHECK_EQ(info.tracks.size(), std::size_t{3});
   CHECK(info.items.empty());
 }
+
+TEST(movie_edit_lists) {
+  // bframes.mp4: each track skips what comes before its first shown sample.
+  const MovieInfo bframes = readMovie(testing::dataPath("bframes.mp4"));
+  const MovieTrack* video = bframes.firstTrack("vide");
+  CHECK(video != nullptr);
+  CHECK_EQ(video->edits.size(), std::size_t{1});
+  CHECK_EQ(video->edits[0].duration, std::uint64_t{2000});
+  CHECK_EQ(video->edits[0].media_time, std::int64_t{1024});
+  CHECK_EQ(video->edits[0].rate, 0x10000);
+
+  // edited.mov: an empty edit first, then two pieces of the media.
+  const MovieInfo edited = readMovie(testing::dataPath("edited.mov"));
+  const MovieTrack* picture = edited.firstTrack("vide");
+  CHECK(picture != nullptr);
+  CHECK_EQ(picture->edits.size(), std::size_t{3});
+  CHECK_EQ(picture->edits[0].duration, std::uint64_t{300});
+  CHECK_EQ(picture->edits[0].media_time, std::int64_t{-1});
+  CHECK_EQ(picture->edits[1].media_time, std::int64_t{300});
+  CHECK_EQ(picture->edits[2].duration, std::uint64_t{300});
+  CHECK_EQ(picture->edits[2].media_time, std::int64_t{600});
+
+  // A movie with none.
+  const MovieInfo plain = readMovie(testing::dataPath("iphone.mov"));
+  CHECK(plain.firstTrack("vide")->edits.empty());
+}
